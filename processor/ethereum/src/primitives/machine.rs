@@ -140,7 +140,7 @@ impl SignatureMachine<Transaction> for ActionSignatureMachine {
     self.machine.complete(shares).map(|signature| {
       let s = signature.s;
       let c = Signature::challenge(signature.R, &self.key, &self.action.message());
-      Transaction(self.action, Signature::new(c, s))
+      Transaction(self.action, Signature::new(c, s).unwrap())
     })
   }
 }

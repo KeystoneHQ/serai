@@ -20,11 +20,17 @@ pub struct Signature {
 impl Signature {
   /// Construct a new `Signature`.
   #[must_use]
-  pub fn new(c: Scalar, s: Scalar) -> Signature {
-    Signature { c, s }
+  pub fn new(c: Scalar, s: Scalar) -> Option<Signature> {
+    if bool::from(c.is_zero()) {
+      None?;
+    }
+    Some(Signature { c, s })
   }
 
   /// The challenge for a signature.
+  ///
+  /// With negligible probability, this MAY return 0 which will create an invalid/unverifiable
+  /// signature.
   #[must_use]
   pub fn challenge(R: ProjectivePoint, key: &PublicKey, message: &[u8]) -> Scalar {
     // H(R || A || m)

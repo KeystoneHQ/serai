@@ -31,8 +31,7 @@ impl PublicKey {
 
     let x_coordinate = affine.x();
     // Return None if the x-coordinate isn't mutual to both fields
-    // While reductions shouldn't be an issue, it's one less headache/concern to have
-    // The trivial amount of public keys this makes non-representable aren't a concern
+    // The trivial amount of public keys this makes non-representable aren't considered a concern
     if <Scalar as Reduce<KU256>>::reduce_bytes(&x_coordinate).to_repr() != x_coordinate {
       None?;
     }

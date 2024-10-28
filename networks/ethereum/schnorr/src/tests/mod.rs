@@ -17,6 +17,9 @@ use alloy_node_bindings::{Anvil, AnvilInstance};
 
 use crate::{PublicKey, Signature};
 
+mod public_key;
+pub(crate) use public_key::test_key;
+mod signature;
 mod premise;
 
 #[expect(warnings)]
@@ -88,12 +91,7 @@ async fn test_verify() {
   let (_anvil, provider, address) = setup_test().await;
 
   for _ in 0 .. 100 {
-    let (key, public_key) = loop {
-      let key = Scalar::random(&mut OsRng);
-      if let Some(public_key) = PublicKey::new(ProjectivePoint::GENERATOR * key) {
-        break (key, public_key);
-      }
-    };
+    let (key, public_key) = test_key();
 
     let nonce = Scalar::random(&mut OsRng);
     let mut message = vec![0; 1 + usize::try_from(OsRng.next_u32() % 256).unwrap()];
@@ -102,11 +100,37 @@ async fn test_verify() {
     let c = Signature::challenge(ProjectivePoint::GENERATOR * nonce, &public_key, &message);
     let s = nonce + (c * key);
 
-    let sig = Signature::new(c, s);
+    let sig = Signature::new(c, s).unwrap();
     assert!(sig.verify(&public_key, &message));
     assert!(call_verify(&provider, address, &public_key, &message, &sig).await);
+
+    // Test setting `s = 0` doesn't pass verification
+    {
+      let zero_s = Signature::new(c, Scalar::ZERO).unwrap();
+      assert!(!zero_s.verify(&public_key, &message));
+      assert!(!call_verify(&provider, address, &public_key, &message, &zero_s).await);
+    }
+
     // Mutate the message and make sure the signature now fails to verify
-    message[0] = message[0].wrapping_add(1);
-    assert!(!call_verify(&provider, address, &public_key, &message, &sig).await);
+    {
+      let mut message = message.clone();
+      message[0] = message[0].wrapping_add(1);
+      assert!(!sig.verify(&public_key, &message));
+      assert!(!call_verify(&provider, address, &public_key, &message, &sig).await);
+    }
+
+    // Mutate c and make sure the signature now fails to verify
+    {
+      let mutated_c = Signature::new(c + Scalar::ONE, s).unwrap();
+      assert!(!mutated_c.verify(&public_key, &message));
+      assert!(!call_verify(&provider, address, &public_key, &message, &mutated_c).await);
+    }
+
+    // Mutate s and make sure the signature now fails to verify
+    {
+      let mutated_s = Signature::new(c, s + Scalar::ONE).unwrap();
+      assert!(!mutated_s.verify(&public_key, &message));
+      assert!(!call_verify(&provider, address, &public_key, &message, &mutated_s).await);
+    }
   }
 }
