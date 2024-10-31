@@ -88,6 +88,7 @@ members = [
   "processor/bin",
   "processor/bitcoin",
   "processor/ethereum/primitives",
+  "processor/ethereum/test-primitives",
   "processor/ethereum/deployer",
   "processor/ethereum/router",
   "processor/ethereum/erc20",

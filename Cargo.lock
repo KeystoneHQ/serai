@@ -8375,6 +8375,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serai-ethereum-test-primitives"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-core",
+ "alloy-provider",
+ "alloy-rpc-types-eth",
+ "alloy-simple-request-transport",
+ "k256",
+ "serai-processor-ethereum-primitives",
+]
+
+[[package]]
 name = "serai-full-stack-tests"
 version = "0.1.0"
 dependencies = [
@@ -8706,7 +8719,9 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-core",
+ "alloy-node-bindings",
  "alloy-provider",
+ "alloy-rpc-client",
  "alloy-rpc-types-eth",
  "alloy-simple-request-transport",
  "alloy-sol-macro-expander",
@@ -8716,12 +8731,16 @@ dependencies = [
  "build-solidity-contracts",
  "ethereum-schnorr-contract",
  "group",
+ "k256",
+ "rand_core",
  "serai-client",
+ "serai-ethereum-test-primitives",
  "serai-processor-ethereum-deployer",
  "serai-processor-ethereum-erc20",
  "serai-processor-ethereum-primitives",
  "syn 2.0.77",
  "syn-solidity",
+ "tokio",
 ]
 
 [[package]]

@@ -59,10 +59,25 @@ impl Deployer {
   }
 
   /// Obtain the deterministic address for this contract.
-  pub(crate) fn address() -> Address {
+  pub fn address() -> Address {
     let deployer_deployer =
       Self::deployment_tx().recover_signer().expect("deployment_tx didn't have a valid signature");
     Address::create(&deployer_deployer, 0)
+  }
+
+  /// Obtain the unsigned transaction to deploy a contract.
+  ///
+  /// This will not have its `nonce`, `gas_price`, nor `gas_limit` filled out.
+  pub fn deploy_tx(init_code: Vec<u8>) -> TxLegacy {
+    TxLegacy {
+      chain_id: None,
+      nonce: 0,
+      gas_price: 0,
+      gas_limit: 0,
+      to: TxKind::Call(Self::address()),
+      value: U256::ZERO,
+      input: abi::Deployer::deployCall::new((init_code.into(),)).abi_encode().into(),
+    }
   }
 
   /// Construct a new view of the Deployer.

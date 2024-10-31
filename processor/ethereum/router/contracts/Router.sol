@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.26;
 
+// TODO: MIT licensed interface
+
 import "IERC20.sol";
 
 import "Schnorr.sol";
@@ -34,8 +36,11 @@ contract Router {
   */
   uint256 private _smartContractNonce;
 
-  /// @dev A nonce incremented upon an action to prevent replays/out-of-order execution
-  uint256 private _nonce;
+  /**
+   * @dev The nonce to verify the next signature with, incremented upon an action to prevent
+   *   replays/out-of-order execution
+   */
+  uint256 private _nextNonce;
 
   /**
    * @dev The current public key for Serai's Ethereum validator set, in the form the Schnorr library
@@ -124,7 +129,7 @@ contract Router {
   /**
    * @dev Updates the Serai key at the end of the current function. Executing at the end of the
    *   current function allows verifying a signature with the current key. This does not update
-   *   `_nonce`
+   *   `_nextNonce`
    */
   /// @param nonceUpdatedWith The nonce used to update the key
   /// @param newSeraiKey The key updated to
@@ -145,7 +150,7 @@ contract Router {
     _smartContractNonce = 1;
 
     // We consumed nonce 0 when setting the initial Serai key
-    _nonce = 1;
+    _nextNonce = 1;
 
     // We haven't escaped to any address yet
     _escapedTo = address(0);
@@ -163,18 +168,19 @@ contract Router {
     if (!Schnorr.verify(_seraiKey, message, signature.c, signature.s)) {
       revert InvalidSignature();
     }
-    // Increment the nonce
+    // Set the next nonce
     unchecked {
-      _nonce++;
+      _nextNonce++;
     }
   }
 
   /// @notice Update the key representing Serai's Ethereum validators
+  /// @dev This assumes the key is correct. No checks on it are performed
   /// @param newSeraiKey The key to update to
   /// @param signature The signature by the current key authorizing this update
   function updateSeraiKey(bytes32 newSeraiKey, Signature calldata signature)
     external
-    updateSeraiKeyAtEndOfFn(_nonce, newSeraiKey)
+    updateSeraiKeyAtEndOfFn(_nextNonce, newSeraiKey)
   {
     /*
       This DST needs a length prefix as well to prevent DSTs potentially being substrings of each
@@ -188,7 +194,7 @@ contract Router {
 
       This uses encodePacked as all items present here are of fixed length.
     */
-    bytes32 message = keccak256(abi.encodePacked("updateSeraiKey", _nonce, newSeraiKey));
+    bytes32 message = keccak256(abi.encodePacked("updateSeraiKey", _nextNonce, newSeraiKey));
     verifySignature(message, signature);
   }
 
@@ -366,11 +372,11 @@ contract Router {
     // Verify the signature
     // This uses `encode`, not `encodePacked`, as `outs` is of variable length
     // TODO: Use a custom encode in verifySignature here with assembly (benchmarking before/after)
-    bytes32 message = keccak256(abi.encode("execute", _nonce, coin, fee, outs));
+    bytes32 message = keccak256(abi.encode("execute", _nextNonce, coin, fee, outs));
     verifySignature(message, signature);
 
-    // _nonce: Also include a bit mask here
-    emit Executed(_nonce, message);
+    // TODO: Also include a bit mask here
+    emit Executed(_nextNonce, message);
 
     /*
       Since we don't have a re-entrancy guard, it is possible for instructions from later batches to
@@ -449,7 +455,7 @@ contract Router {
     }
 
     // Verify the signature
-    bytes32 message = keccak256(abi.encodePacked("escapeHatch", _nonce, escapeTo));
+    bytes32 message = keccak256(abi.encodePacked("escapeHatch", _nextNonce, escapeTo));
     verifySignature(message, signature);
 
     _escapedTo = escapeTo;
@@ -477,8 +483,8 @@ contract Router {
 
   /// @notice Fetch the next nonce to use by an action published to this contract
   /// return The next nonce to use by an action published to this contract
-  function nonce() external view returns (uint256) {
-    return _nonce;
+  function nextNonce() external view returns (uint256) {
+    return _nextNonce;
   }
 
   /// @notice Fetch the current key for Serai's Ethereum validator set

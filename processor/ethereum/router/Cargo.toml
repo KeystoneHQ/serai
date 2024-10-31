@@ -20,9 +20,9 @@ workspace = true
 group = { version = "0.13", default-features = false }
 
 alloy-core = { version = "0.8", default-features = false }
-alloy-consensus = { version = "0.3", default-features = false }
-
 alloy-sol-types = { version = "0.8", default-features = false }
+
+alloy-consensus = { version = "0.3", default-features = false }
 
 alloy-rpc-types-eth = { version = "0.3", default-features = false }
 alloy-transport = { version = "0.3", default-features = false }
@@ -45,3 +45,15 @@ syn = { version = "2", default-features = false, features = ["proc-macro"] }
 syn-solidity = { version = "0.8", default-features = false }
 alloy-sol-macro-input = { version = "0.8", default-features = false }
 alloy-sol-macro-expander = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+rand_core = { version = "0.6", default-features = false, features = ["std"] }
+
+k256 = { version = "0.13", default-features = false, features = ["std"] }
+
+alloy-rpc-client = { version = "0.3", default-features = false }
+alloy-node-bindings = { version = "0.3", default-features = false }
+
+tokio = { version = "1.0", default-features = false, features = ["rt-multi-thread", "macros"] }
+
+ethereum-test-primitives = { package = "serai-ethereum-test-primitives", path = "../test-primitives" }
