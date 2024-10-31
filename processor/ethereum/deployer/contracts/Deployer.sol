@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 /*
-  The expected deployment process of the Router is as follows:
+  The expected deployment process of Serai's Router is as follows:
 
   1) A transaction deploying Deployer is made. Then, a deterministic signature is
      created such that an account with an unknown private key is the creator of
@@ -32,35 +32,57 @@ pragma solidity ^0.8.26;
   with Serai verifying the published result. This would introduce a DoS risk in
   the council not publishing the correct key/not publishing any key.
 
-  This design does not work with designs expecting initialization (which may require re-deploying
-  the same code until the initialization successfully goes through, without being sniped).
+  This design does not work (well) with contracts expecting initialization due
+  to only allowing deploying init code once (which assumes contracts are
+  distinct via their constructors). Such designs are unused by Serai so that is
+  accepted.
 */
 
+/// @title Deployer of contracts for the Serai network
+/// @author Luke Parker <lukeparker@serai.exchange>
 contract Deployer {
+  /// @return The deployment for some (hashed) init code
   mapping(bytes32 => address) public deployments;
 
+  /// @notice Raised if the provided init code was already prior deployed
   error PriorDeployed();
+  /// @notice Raised if the deployment fails
   error DeploymentFailed();
 
-  function deploy(bytes memory init_code) external {
+  /// @notice Deploy the specified init code with `CREATE`
+  /// @dev This init code is expected to be unique and not prior deployed
+  /// @param initCode The init code to pass to `CREATE`
+  function deploy(bytes memory initCode) external {
     // Deploy the contract
-    address created_contract;
+    address createdContract;
+    // slither-disable-next-line assembly
     assembly {
-      created_contract := create(0, add(init_code, 0x20), mload(init_code))
+      createdContract := create(0, add(initCode, 0x20), mload(initCode))
     }
-    if (created_contract == address(0)) {
+    if (createdContract == address(0)) {
       revert DeploymentFailed();
     }
 
-    bytes32 init_code_hash = keccak256(init_code);
+    bytes32 initCodeHash = keccak256(initCode);
 
-    // Check this wasn't prior deployed
-    // We check this *after* deploymeing (in violation of CEI) to handle re-entrancy related bugs
-    if (deployments[init_code_hash] != address(0)) {
+    /*
+      Check this wasn't prior deployed.
+
+      This is a post-check, not a pre-check (in violation of the CEI pattern). If we used a
+      pre-check, a deployed contract could re-enter the Deployer to deploy the same contract
+      multiple times due to the inner call updating state and then the outer call overwriting it.
+      The post-check causes the outer call to error once the inner call updates state.
+
+      This does mean contract deployment may fail if deployment causes arbitrary execution which
+      maliciously nests deployment of the being-deployed contract. Such an inner call won't fail,
+      yet the outer call would. The usage of a re-entrancy guard would call the inner call to fail
+      while the outer call succeeds. This is considered so edge-case it isn't worth handling.
+    */
+    if (deployments[initCodeHash] != address(0)) {
       revert PriorDeployed();
     }
 
     // Write the deployment to storage
-    deployments[init_code_hash] = created_contract;
+    deployments[initCodeHash] = createdContract;
   }
 }

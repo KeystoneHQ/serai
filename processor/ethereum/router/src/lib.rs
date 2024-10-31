@@ -297,10 +297,9 @@ impl Router {
   }
 
   /// Get the message to be signed in order to update the key for Serai.
-  pub fn update_serai_key_message(chain_id: U256, nonce: u64, key: &PublicKey) -> Vec<u8> {
+  pub fn update_serai_key_message(nonce: u64, key: &PublicKey) -> Vec<u8> {
     (
       "updateSeraiKey",
-      chain_id,
       U256::try_from(nonce).expect("couldn't convert u64 to u256"),
       key.eth_repr(),
     )
@@ -322,13 +321,12 @@ impl Router {
 
   /// Get the message to be signed in order to execute a series of `OutInstruction`s.
   pub fn execute_message(
-    chain_id: U256,
     nonce: u64,
     coin: Coin,
     fee: U256,
     outs: OutInstructions,
   ) -> Vec<u8> {
-    ("execute", chain_id, U256::try_from(nonce).unwrap(), coin.address(), fee, outs.0).abi_encode()
+    ("execute", U256::try_from(nonce).unwrap(), coin.address(), fee, outs.0).abi_encode()
   }
 
   /// Construct a transaction to execute a batch of `OutInstruction`s.

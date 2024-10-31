@@ -26,8 +26,8 @@ mod abi {
 
 /// The Deployer contract for the Serai Router contract.
 ///
-/// This Deployer has a deterministic address, letting it be immediately identified on any
-/// compatible chain. It then supports retrieving the Router contract's address (which isn't
+/// This Deployer has a deterministic address, letting it be immediately identified on any instance
+/// of the EVM. It then supports retrieving the deployed contracts addresses (which aren't
 /// deterministic) using a single call.
 #[derive(Clone, Debug)]
 pub struct Deployer(Arc<RootProvider<SimpleRequest>>);
@@ -66,6 +66,8 @@ impl Deployer {
   }
 
   /// Construct a new view of the Deployer.
+  ///
+  /// This will return None if the Deployer has yet to be deployed on-chain.
   pub async fn new(
     provider: Arc<RootProvider<SimpleRequest>>,
   ) -> Result<Option<Self>, RpcError<TransportErrorKind>> {

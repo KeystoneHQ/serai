@@ -90,3 +90,25 @@ jobs:
         run: |
           cargo install cargo-machete
           cargo machete
+
+  slither:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac
+      - name: Slither
+        run: |
+          python3 -m pip install solc-select
+          solc-select install 0.8.26
+          solc-select use 0.8.26
+
+          python3 -m pip install slither-analyzer
+
+          slither --include-paths ./networks/ethereum/schnorr/contracts/Schnorr.sol
+          slither --include-paths ./networks/ethereum/schnorr/contracts ./networks/ethereum/schnorr/contracts/tests/Schnorr.sol
+          slither processor/ethereum/deployer/contracts/Deployer.sol
+          slither processor/ethereum/erc20/contracts/IERC20.sol
+
+          cp networks/ethereum/schnorr/contracts/Schnorr.sol processor/ethereum/router/contracts/
+          cp processor/ethereum/erc20/contracts/IERC20.sol processor/ethereum/router/contracts/
+          cd processor/ethereum/router/contracts
+          slither Router.sol
