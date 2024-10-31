@@ -17,8 +17,8 @@ use crate::{output::OutputId, machine::ClonableTransctionMachine};
 
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum Action {
-  SetKey { chain_id: U256, nonce: u64, key: PublicKey },
-  Batch { chain_id: U256, nonce: u64, coin: Coin, fee: U256, outs: Vec<(Address, U256)> },
+  SetKey { nonce: u64, key: PublicKey },
+  Batch { nonce: u64, coin: Coin, fee: U256, outs: Vec<(Address, U256)> },
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -33,24 +33,16 @@ impl Action {
 
   pub(crate) fn message(&self) -> Vec<u8> {
     match self {
-      Action::SetKey { chain_id, nonce, key } => {
-        Router::update_serai_key_message(*chain_id, *nonce, key)
+      Action::SetKey { nonce, key } => Router::update_serai_key_message(*nonce, key),
+      Action::Batch { nonce, coin, fee, outs } => {
+        Router::execute_message(*nonce, *coin, *fee, OutInstructions::from(outs.as_ref()))
       }
-      Action::Batch { chain_id, nonce, coin, fee, outs } => Router::execute_message(
-        *chain_id,
-        *nonce,
-        *coin,
-        *fee,
-        OutInstructions::from(outs.as_ref()),
-      ),
     }
   }
 
   pub(crate) fn eventuality(&self) -> Eventuality {
     Eventuality(match self {
-      Self::SetKey { chain_id: _, nonce, key } => {
-        Executed::SetKey { nonce: *nonce, key: key.eth_repr() }
-      }
+      Self::SetKey { nonce, key } => Executed::SetKey { nonce: *nonce, key: key.eth_repr() },
       Self::Batch { nonce, .. } => {
         Executed::Batch { nonce: *nonce, message_hash: keccak256(self.message()) }
       }
@@ -85,10 +77,6 @@ impl SignableTransaction for Action {
       Err(io::Error::other("unrecognized Action type"))?;
     }
 
-    let mut chain_id = [0; 32];
-    reader.read_exact(&mut chain_id)?;
-    let chain_id = U256::from_le_bytes(chain_id);
-
     let mut nonce = [0; 8];
     reader.read_exact(&mut nonce)?;
     let nonce = u64::from_le_bytes(nonce);
@@ -100,7 +88,7 @@ impl SignableTransaction for Action {
         let key =
           PublicKey::from_eth_repr(key).ok_or_else(|| io::Error::other("invalid key in Action"))?;
 
-        Action::SetKey { chain_id, nonce, key }
+        Action::SetKey { nonce, key }
       }
       1 => {
         let coin = Coin::read(reader)?;
@@ -123,22 +111,20 @@ impl SignableTransaction for Action {
 
           outs.push((address, amount));
         }
-        Action::Batch { chain_id, nonce, coin, fee, outs }
+        Action::Batch { nonce, coin, fee, outs }
       }
       _ => unreachable!(),
     })
   }
   fn write(&self, writer: &mut impl io::Write) -> io::Result<()> {
     match self {
-      Self::SetKey { chain_id, nonce, key } => {
+      Self::SetKey { nonce, key } => {
         writer.write_all(&[0])?;
-        writer.write_all(&chain_id.as_le_bytes())?;
         writer.write_all(&nonce.to_le_bytes())?;
         writer.write_all(&key.eth_repr())
       }
-      Self::Batch { chain_id, nonce, coin, fee, outs } => {
+      Self::Batch { nonce, coin, fee, outs } => {
         writer.write_all(&[1])?;
-        writer.write_all(&chain_id.as_le_bytes())?;
         writer.write_all(&nonce.to_le_bytes())?;
         coin.write(writer)?;
         writer.write_all(&fee.as_le_bytes())?;

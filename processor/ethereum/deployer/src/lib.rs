@@ -67,7 +67,7 @@ impl Deployer {
 
   /// Construct a new view of the Deployer.
   ///
-  /// This will return None if the Deployer has yet to be deployed on-chain.
+  /// This will return `None` if the Deployer has yet to be deployed on-chain.
   pub async fn new(
     provider: Arc<RootProvider<SimpleRequest>>,
   ) -> Result<Option<Self>, RpcError<TransportErrorKind>> {

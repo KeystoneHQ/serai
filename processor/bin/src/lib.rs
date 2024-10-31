@@ -296,7 +296,7 @@ pub async fn main_loop<
                 is equally valid unless we want to start introspecting (and should be our only
                 Batch anyways).
               */
-              burns.drain(..).collect(),
+              std::mem::take(&mut burns),
               key_to_activate,
             );
           }

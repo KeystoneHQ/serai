@@ -168,20 +168,19 @@ impl From<&[(SeraiAddress, U256)]> for OutInstructions {
         .map(|(address, amount)| {
           #[allow(non_snake_case)]
           let (destinationType, destination) = match address {
-            SeraiAddress::Address(address) => (
-              abi::DestinationType::Address,
-              (abi::AddressDestination { destination: Address::from(address) }).abi_encode(),
-            ),
+            SeraiAddress::Address(address) => {
+              (abi::DestinationType::Address, (Address::from(address)).abi_encode())
+            }
             SeraiAddress::Contract(contract) => (
               abi::DestinationType::Code,
               (abi::CodeDestination {
-                gas_limit: contract.gas_limit(),
+                gasLimit: contract.gas_limit(),
                 code: contract.code().to_vec().into(),
               })
               .abi_encode(),
             ),
           };
-          abi::OutInstruction { destinationType, destination: destination.into(), value: *amount }
+          abi::OutInstruction { destinationType, destination: destination.into(), amount: *amount }
         })
         .collect(),
     )
@@ -298,11 +297,7 @@ impl Router {
 
   /// Get the message to be signed in order to update the key for Serai.
   pub fn update_serai_key_message(nonce: u64, key: &PublicKey) -> Vec<u8> {
-    (
-      "updateSeraiKey",
-      U256::try_from(nonce).expect("couldn't convert u64 to u256"),
-      key.eth_repr(),
-    )
+    ("updateSeraiKey", U256::try_from(nonce).expect("couldn't convert u64 to u256"), key.eth_repr())
       .abi_encode_packed()
   }
 
@@ -320,12 +315,7 @@ impl Router {
   }
 
   /// Get the message to be signed in order to execute a series of `OutInstruction`s.
-  pub fn execute_message(
-    nonce: u64,
-    coin: Coin,
-    fee: U256,
-    outs: OutInstructions,
-  ) -> Vec<u8> {
+  pub fn execute_message(nonce: u64, coin: Coin, fee: U256, outs: OutInstructions) -> Vec<u8> {
     ("execute", U256::try_from(nonce).unwrap(), coin.address(), fee, outs.0).abi_encode()
   }
 
@@ -540,7 +530,7 @@ impl Router {
           nonce: log.nonce.try_into().map_err(|e| {
             TransportErrorKind::Custom(format!("filtered to convert nonce to u64: {e:?}").into())
           })?,
-          message_hash: log.message_hash.into(),
+          message_hash: log.messageHash.into(),
         });
       }
     }
