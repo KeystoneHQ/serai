@@ -22,6 +22,18 @@ use ethereum_deployer::Deployer;
 
 use crate::{Coin, OutInstructions, Router};
 
+#[test]
+fn selector_collisions() {
+  assert_eq!(
+    crate::_irouter_abi::IRouter::executeCall::SELECTOR,
+    crate::_router_abi::Router::execute4DE42904Call::SELECTOR
+  );
+  assert_eq!(
+    crate::_irouter_abi::IRouter::updateSeraiKeyCall::SELECTOR,
+    crate::_router_abi::Router::updateSeraiKey5A8542A2Call::SELECTOR
+  );
+}
+
 pub(crate) fn test_key() -> (Scalar, PublicKey) {
   loop {
     let key = Scalar::random(&mut OsRng);

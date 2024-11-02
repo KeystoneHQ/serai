@@ -20,7 +20,9 @@ workspace = true
 group = { version = "0.13", default-features = false }
 
 alloy-core = { version = "0.8", default-features = false }
+
 alloy-sol-types = { version = "0.8", default-features = false }
+alloy-sol-macro = { version = "0.8", default-features = false }
 
 alloy-consensus = { version = "0.3", default-features = false }
 

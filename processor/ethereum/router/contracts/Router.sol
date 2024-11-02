@@ -171,10 +171,14 @@ contract Router {
   }
 
   /// @notice Update the key representing Serai's Ethereum validators
-  /// @dev This assumes the key is correct. No checks on it are performed
+  /**
+   * @dev This assumes the key is correct. No checks on it are performed.
+   *
+   *  The hex bytes are to cause a collision with `IRouter.updateSeraiKey`.
+   */
   // @param signature The signature by the current key authorizing this update
   // @param newSeraiKey The key to update to
-  function updateSeraiKey() external {
+  function updateSeraiKey5A8542A2() external {
     (uint256 nonceUsed, bytes memory args,) = verifySignature();
     /*
       We could replace this with a length check (if we don't simply assume the calldata is valid as
@@ -341,7 +345,9 @@ contract Router {
   /// @notice Execute a batch of `OutInstruction`s
   /**
    * @dev All `OutInstruction`s in a batch are only for a single coin to simplify handling of the
-   *  fee
+   *  fee.
+   *
+   *  The hex bytes are to cause a function selector collision with `IRouter.execute`.
    */
   // @param signature The signature by the current key for Serai's Ethereum validators
   // @param coin The coin all of these `OutInstruction`s are for
@@ -349,7 +355,7 @@ contract Router {
   // @param outs The `OutInstruction`s to act on
   // Each individual call is explicitly metered to ensure there isn't a DoS here
   // slither-disable-next-line calls-loop
-  function execute() external {
+  function execute4DE42904() external {
     (uint256 nonceUsed, bytes memory args, bytes32 message) = verifySignature();
     (,, address coin, uint256 fee, IRouter.OutInstruction[] memory outs) =
       abi.decode(args, (bytes32, bytes32, address, uint256, IRouter.OutInstruction[]));
@@ -418,10 +424,14 @@ contract Router {
   }
 
   /// @notice Escapes to a new smart contract
-  /// @dev This should be used upon an invariant being reached or new functionality being needed
+  /**
+   * @dev This should be used upon an invariant being reached or new functionality being needed.
+   *
+   * The hex bytes are to cause a collision with `IRouter.updateSeraiKey`.
+   */
   // @param signature The signature by the current key for Serai's Ethereum validators
   // @param escapeTo The address to escape to
-  function escapeHatch() external {
+  function escapeHatchDCDD91CC() external {
     // Verify the signature
     (, bytes memory args,) = verifySignature();
 

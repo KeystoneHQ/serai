@@ -33,7 +33,7 @@ fn main() {
   )
   .unwrap();
 
-  // This cannot be handled with the sol! macro. The Solidity requires an import
+  // This cannot be handled with the sol! macro. The Router requires an import
   // https://github.com/alloy-rs/core/issues/602
   sol(
     &[

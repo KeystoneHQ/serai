@@ -28,15 +28,23 @@ use serai_client::networks::ethereum::Address as SeraiAddress;
 #[expect(clippy::all)]
 #[expect(clippy::ignored_unit_patterns)]
 #[expect(clippy::redundant_closure_for_method_calls)]
-mod _abi {
+pub mod _irouter_abi {
+  alloy_sol_macro::sol!("contracts/IRouter.sol");
+}
+
+#[rustfmt::skip]
+#[expect(warnings)]
+#[expect(needless_pass_by_value)]
+#[expect(clippy::all)]
+#[expect(clippy::ignored_unit_patterns)]
+#[expect(clippy::redundant_closure_for_method_calls)]
+mod _router_abi {
   include!(concat!(env!("OUT_DIR"), "/serai-processor-ethereum-router/router.rs"));
 }
+
 mod abi {
-  pub use super::_abi::IRouter::{
-    Signature, DestinationType, CodeDestination, OutInstruction, SeraiKeyUpdated, InInstruction,
-    Executed, EscapeHatch, Escaped,
-  };
-  pub use super::_abi::Router::*;
+  pub use super::_router_abi::IRouter::*;
+  pub use super::_router_abi::Router::constructorCall;
 }
 use abi::{
   SeraiKeyUpdated as SeraiKeyUpdatedEvent, InInstruction as InInstructionEvent,
@@ -315,23 +323,22 @@ impl Router {
 
   /// Get the message to be signed in order to update the key for Serai.
   pub fn update_serai_key_message(nonce: u64, key: &PublicKey) -> Vec<u8> {
-    [
-      abi::updateSeraiKeyCall::SELECTOR.as_slice(),
-      &(U256::try_from(nonce).unwrap(), U256::ZERO, key.eth_repr()).abi_encode_params(),
-    ]
-    .concat()
+    abi::updateSeraiKeyCall::new((
+      abi::Signature { c: U256::try_from(nonce).unwrap().into(), s: U256::ZERO.into() },
+      key.eth_repr().into(),
+    ))
+    .abi_encode()
   }
 
   /// Construct a transaction to update the key representing Serai.
   pub fn update_serai_key(&self, public_key: &PublicKey, sig: &Signature) -> TxLegacy {
     TxLegacy {
       to: TxKind::Call(self.1),
-      input: [
-        abi::updateSeraiKeyCall::SELECTOR.as_slice(),
-        &(abi::Signature::from(sig), public_key.eth_repr()).abi_encode_params(),
-      ]
-      .concat()
-      .into(),
+      input: abi::updateSeraiKeyCall::new((
+        abi::Signature::from(sig),
+        public_key.eth_repr().into(),
+      ))
+      .abi_encode().into(),
       gas_limit: 40_889 * 120 / 100,
       ..Default::default()
     }
@@ -339,12 +346,13 @@ impl Router {
 
   /// Get the message to be signed in order to execute a series of `OutInstruction`s.
   pub fn execute_message(nonce: u64, coin: Coin, fee: U256, outs: OutInstructions) -> Vec<u8> {
-    [
-      abi::executeCall::SELECTOR.as_slice(),
-      &(U256::try_from(nonce).unwrap(), U256::ZERO, coin.address(), fee, outs.0)
-        .abi_encode_params(),
-    ]
-    .concat()
+    abi::executeCall::new((
+      abi::Signature { c: U256::try_from(nonce).unwrap().into(), s: U256::ZERO.into() },
+      coin.address(),
+      fee,
+      outs.0,
+    ))
+    .abi_encode()
   }
 
   /// Construct a transaction to execute a batch of `OutInstruction`s.
@@ -352,12 +360,9 @@ impl Router {
     let outs_len = outs.0.len();
     TxLegacy {
       to: TxKind::Call(self.1),
-      input: [
-        abi::executeCall::SELECTOR.as_slice(),
-        &(abi::Signature::from(sig), coin.address(), fee, outs.0).abi_encode_params(),
-      ]
-      .concat()
-      .into(),
+      input: abi::executeCall::new((abi::Signature::from(sig), coin.address(), fee, outs.0))
+        .abi_encode()
+        .into(),
       // TODO
       gas_limit: (45_501 + ((200_000 + 10_000) * u128::try_from(outs_len).unwrap())) * 120 / 100,
       ..Default::default()
