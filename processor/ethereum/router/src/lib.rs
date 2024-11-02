@@ -31,7 +31,13 @@ use serai_client::networks::ethereum::Address as SeraiAddress;
 mod _abi {
   include!(concat!(env!("OUT_DIR"), "/serai-processor-ethereum-router/router.rs"));
 }
-use _abi::Router as abi;
+mod abi {
+  pub use super::_abi::IRouter::{
+    Signature, DestinationType, CodeDestination, OutInstruction, SeraiKeyUpdated, InInstruction,
+    Executed, EscapeHatch, Escaped,
+  };
+  pub use super::_abi::Router::*;
+}
 use abi::{
   SeraiKeyUpdated as SeraiKeyUpdatedEvent, InInstruction as InInstructionEvent,
   Executed as ExecutedEvent,
@@ -326,7 +332,7 @@ impl Router {
       ]
       .concat()
       .into(),
-      gas_limit: 40927 * 120 / 100,
+      gas_limit: 40_889 * 120 / 100,
       ..Default::default()
     }
   }
@@ -353,7 +359,7 @@ impl Router {
       .concat()
       .into(),
       // TODO
-      gas_limit: 100_000 + ((200_000 + 10_000) * u128::try_from(outs_len).unwrap()),
+      gas_limit: (45_501 + ((200_000 + 10_000) * u128::try_from(outs_len).unwrap())) * 120 / 100,
       ..Default::default()
     }
   }

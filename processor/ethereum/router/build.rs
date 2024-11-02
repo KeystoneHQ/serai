@@ -27,7 +27,7 @@ fn main() {
   }
 
   build_solidity_contracts::build(
-    &["../../../networks/ethereum/schnorr/contracts", "../erc20/contracts"],
+    &["../../../networks/ethereum/schnorr/contracts", "../erc20/contracts", "contracts"],
     "contracts",
     &artifacts_path,
   )
@@ -36,7 +36,11 @@ fn main() {
   // This cannot be handled with the sol! macro. The Solidity requires an import
   // https://github.com/alloy-rs/core/issues/602
   sol(
-    &["../../../networks/ethereum/schnorr/contracts/Schnorr.sol", "contracts/Router.sol"],
+    &[
+      "../../../networks/ethereum/schnorr/contracts/Schnorr.sol",
+      "contracts/IRouter.sol",
+      "contracts/Router.sol",
+    ],
     &(artifacts_path + "/router.rs"),
   );
 }
