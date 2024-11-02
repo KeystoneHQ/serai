@@ -1,44 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-/// @title Serai Router
+/// @title Serai Router (without functions overriden by selector collisions)
 /// @author Luke Parker <lukeparker@serai.exchange>
 /// @notice Intakes coins for the Serai network and handles relaying batches of transfers out
-interface IRouter {
-  /// @title A signature
-  /// @dev Thin wrapper around `c, s` to simplify the API
-  struct Signature {
-    bytes32 c;
-    bytes32 s;
-  }
-
-  /// @title The type of destination
-  /// @dev A destination is either an address or a blob of code to deploy and call
-  enum DestinationType {
-    Address,
-    Code
-  }
-
-  /// @title A code destination
-  /**
-   * @dev If transferring an ERC20 to this destination, it will be transferred to the address the
-   *   code will be deployed to. If transferring ETH, it will be transferred with the deployment of
-   *   the code. `code` is deployed with CREATE (calling its constructor). The entire deployment
-   *   (and associated sandboxing) must consume less than `gasLimit` units of gas or it will revert.
-   */
-  struct CodeDestination {
-    uint32 gasLimit;
-    bytes code;
-  }
-
-  /// @title An instruction to transfer coins out
-  /// @dev Specifies a destination and amount but not the coin as that's assumed to be contextual
-  struct OutInstruction {
-    DestinationType destinationType;
-    bytes destination;
-    uint256 amount;
-  }
-
+interface IRouterWithoutCollisions {
   /// @notice Emitted when the key for Serai's Ethereum validators is updated
   /// @param nonce The nonce consumed to update this key
   /// @param key The key updated to
@@ -80,12 +46,6 @@ interface IRouter {
   /// @notice Escaping when escape hatch wasn't invoked.
   error EscapeHatchNotInvoked();
 
-  /// @notice Update the key representing Serai's Ethereum validators
-  /// @dev This assumes the key is correct. No checks on it are performed
-  /// @param signature The signature by the current key authorizing this update
-  /// @param newSeraiKey The key to update to
-  function updateSeraiKey(Signature calldata signature, bytes32 newSeraiKey) external;
-
   /// @notice Transfer coins into Serai with an instruction
   /// @param coin The coin to transfer in (address(0) if Ether)
   /// @param amount The amount to transfer in (msg.value if Ether)
@@ -106,6 +66,67 @@ interface IRouter {
    */
   /// @param code The code to execute
   function executeArbitraryCode(bytes memory code) external payable;
+
+  /// @notice Escape coins after the escape hatch has been invoked
+  /// @param coin The coin to escape
+  function escape(address coin) external;
+
+  /// @notice Fetch the next nonce to use by an action published to this contract
+  /// return The next nonce to use by an action published to this contract
+  function nextNonce() external view returns (uint256);
+
+  /// @notice Fetch the current key for Serai's Ethereum validator set
+  /// @return The current key for Serai's Ethereum validator set
+  function seraiKey() external view returns (bytes32);
+
+  /// @notice Fetch the address escaped to
+  /// @return The address which was escaped to (address(0) if the escape hatch hasn't been invoked)
+  function escapedTo() external view returns (address);
+}
+
+/// @title Serai Router
+/// @author Luke Parker <lukeparker@serai.exchange>
+/// @notice Intakes coins for the Serai network and handles relaying batches of transfers out
+interface IRouter is IRouterWithoutCollisions {
+  /// @title A signature
+  /// @dev Thin wrapper around `c, s` to simplify the API
+  struct Signature {
+    bytes32 c;
+    bytes32 s;
+  }
+
+  /// @title The type of destination
+  /// @dev A destination is either an address or a blob of code to deploy and call
+  enum DestinationType {
+    Address,
+    Code
+  }
+
+  /// @title A code destination
+  /**
+   * @dev If transferring an ERC20 to this destination, it will be transferred to the address the
+   *   code will be deployed to. If transferring ETH, it will be transferred with the deployment of
+   *   the code. `code` is deployed with CREATE (calling its constructor). The entire deployment
+   *   (and associated sandboxing) must consume less than `gasLimit` units of gas or it will revert.
+   */
+  struct CodeDestination {
+    uint32 gasLimit;
+    bytes code;
+  }
+
+  /// @title An instruction to transfer coins out
+  /// @dev Specifies a destination and amount but not the coin as that's assumed to be contextual
+  struct OutInstruction {
+    DestinationType destinationType;
+    bytes destination;
+    uint256 amount;
+  }
+
+  /// @notice Update the key representing Serai's Ethereum validators
+  /// @dev This assumes the key is correct. No checks on it are performed
+  /// @param signature The signature by the current key authorizing this update
+  /// @param newSeraiKey The key to update to
+  function updateSeraiKey(Signature calldata signature, bytes32 newSeraiKey) external;
 
   /// @notice Execute a batch of `OutInstruction`s
   /**
@@ -128,20 +149,4 @@ interface IRouter {
   /// @param signature The signature by the current key for Serai's Ethereum validators
   /// @param escapeTo The address to escape to
   function escapeHatch(Signature calldata signature, address escapeTo) external;
-
-  /// @notice Escape coins after the escape hatch has been invoked
-  /// @param coin The coin to escape
-  function escape(address coin) external;
-
-  /// @notice Fetch the next nonce to use by an action published to this contract
-  /// return The next nonce to use by an action published to this contract
-  function nextNonce() external view returns (uint256);
-
-  /// @notice Fetch the current key for Serai's Ethereum validator set
-  /// @return The current key for Serai's Ethereum validator set
-  function seraiKey() external view returns (bytes32);
-
-  /// @notice Fetch the address escaped to
-  /// @return The address which was escaped to (address(0) if the escape hatch hasn't been invoked)
-  function escapedTo() external view returns (address);
 }

@@ -28,7 +28,7 @@ use serai_client::networks::ethereum::Address as SeraiAddress;
 #[expect(clippy::all)]
 #[expect(clippy::ignored_unit_patterns)]
 #[expect(clippy::redundant_closure_for_method_calls)]
-pub mod _irouter_abi {
+mod _irouter_abi {
   alloy_sol_macro::sol!("contracts/IRouter.sol");
 }
 
@@ -43,6 +43,7 @@ mod _router_abi {
 }
 
 mod abi {
+  pub use super::_router_abi::IRouterWithoutCollisions::*;
   pub use super::_router_abi::IRouter::*;
   pub use super::_router_abi::Router::constructorCall;
 }
@@ -338,7 +339,8 @@ impl Router {
         abi::Signature::from(sig),
         public_key.eth_repr().into(),
       ))
-      .abi_encode().into(),
+      .abi_encode()
+      .into(),
       gas_limit: 40_889 * 120 / 100,
       ..Default::default()
     }

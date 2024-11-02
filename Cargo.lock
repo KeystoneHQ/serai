@@ -8724,6 +8724,7 @@ dependencies = [
  "alloy-rpc-client",
  "alloy-rpc-types-eth",
  "alloy-simple-request-transport",
+ "alloy-sol-macro",
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
  "alloy-sol-types",

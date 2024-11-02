@@ -24,7 +24,7 @@ import "IRouter.sol";
 /// @title Serai Router
 /// @author Luke Parker <lukeparker@serai.exchange>
 /// @notice Intakes coins for the Serai network and handles relaying batches of transfers out
-contract Router {
+contract Router is IRouterWithoutCollisions {
   /**
    * @dev The next nonce used to determine the address of contracts deployed with CREATE. This is
    *   used to predict the addresses of deployed contracts ahead of time.
@@ -32,7 +32,7 @@ contract Router {
   /*
     We don't expose a getter for this as it shouldn't be expected to have any specific value at a
     given moment in time. If someone wants to know the address of their deployed contract, they can
-    have it emit IRouter.an event and verify the emitting contract is the expected one.
+    have it emit an event and verify the emitting contract is the expected one.
   */
   uint256 private _smartContractNonce;
 
@@ -56,7 +56,7 @@ contract Router {
   /// @param newSeraiKey The key updated to
   function _updateSeraiKey(uint256 nonceUpdatedWith, bytes32 newSeraiKey) private {
     _seraiKey = newSeraiKey;
-    emit IRouter.SeraiKeyUpdated(nonceUpdatedWith, newSeraiKey);
+    emit SeraiKeyUpdated(nonceUpdatedWith, newSeraiKey);
   }
 
   /// @notice The constructor for the relayer
@@ -88,7 +88,7 @@ contract Router {
   {
     // If the escape hatch was triggered, reject further signatures
     if (_escapedTo != address(0)) {
-      revert IRouter.EscapeHatchInvoked();
+      revert EscapeHatchInvoked();
     }
 
     message = msg.data;
@@ -100,7 +100,7 @@ contract Router {
       (triggering undefined behavior).
     */
     if (messageLen < 68) {
-      revert IRouter.InvalidSignature();
+      revert InvalidSignature();
     }
 
     // Read _nextNonce into memory as the nonce we'll use
@@ -127,7 +127,7 @@ contract Router {
 
     // Verify the signature
     if (!Schnorr.verify(_seraiKey, messageHash, signatureC, signatureS)) {
-      revert IRouter.InvalidSignature();
+      revert InvalidSignature();
     }
 
     // Set the next nonce
@@ -200,7 +200,7 @@ contract Router {
   function inInstruction(address coin, uint256 amount, bytes memory instruction) external payable {
     // Check the transfer
     if (coin == address(0)) {
-      if (amount != msg.value) revert IRouter.AmountMismatchesMsgValue();
+      if (amount != msg.value) revert AmountMismatchesMsgValue();
     } else {
       (bool success, bytes memory res) = address(coin).call(
         abi.encodeWithSelector(IERC20.transferFrom.selector, msg.sender, address(this), amount)
@@ -211,7 +211,7 @@ contract Router {
         ERC20 contract did in fact return true
       */
       bool nonStandardResOrTrue = (res.length == 0) || abi.decode(res, (bool));
-      if (!(success && nonStandardResOrTrue)) revert IRouter.TransferFromFailed();
+      if (!(success && nonStandardResOrTrue)) revert TransferFromFailed();
     }
 
     /*
@@ -236,7 +236,7 @@ contract Router {
 
       It is the Serai network's role not to add support for any non-standard implementations.
     */
-    emit IRouter.InInstruction(msg.sender, coin, amount, instruction);
+    emit InInstruction(msg.sender, coin, amount, instruction);
   }
 
   /// @dev Perform an ERC20 transfer out
@@ -361,7 +361,7 @@ contract Router {
       abi.decode(args, (bytes32, bytes32, address, uint256, IRouter.OutInstruction[]));
 
     // TODO: Also include a bit mask here
-    emit IRouter.Executed(nonceUsed, message);
+    emit Executed(nonceUsed, message);
 
     /*
       Since we don't have a re-entrancy guard, it is possible for instructions from later batches to
@@ -427,7 +427,7 @@ contract Router {
   /**
    * @dev This should be used upon an invariant being reached or new functionality being needed.
    *
-   * The hex bytes are to cause a collision with `IRouter.updateSeraiKey`.
+   * The hex bytes are to cause a collision with `IRouter.escapeHatch`.
    */
   // @param signature The signature by the current key for Serai's Ethereum validators
   // @param escapeTo The address to escape to
@@ -438,7 +438,7 @@ contract Router {
     (,, address escapeTo) = abi.decode(args, (bytes32, bytes32, address));
 
     if (escapeTo == address(0)) {
-      revert IRouter.InvalidEscapeAddress();
+      revert InvalidEscapeAddress();
     }
     /*
       We want to define the escape hatch so coins here now, and latently received, can be forwarded.
@@ -446,21 +446,21 @@ contract Router {
       received coins without penalty (if they update the escape hatch after unstaking).
     */
     if (_escapedTo != address(0)) {
-      revert IRouter.EscapeHatchInvoked();
+      revert EscapeHatchInvoked();
     }
 
     _escapedTo = escapeTo;
-    emit IRouter.EscapeHatch(escapeTo);
+    emit EscapeHatch(escapeTo);
   }
 
   /// @notice Escape coins after the escape hatch has been invoked
   /// @param coin The coin to escape
   function escape(address coin) external {
     if (_escapedTo == address(0)) {
-      revert IRouter.EscapeHatchNotInvoked();
+      revert EscapeHatchNotInvoked();
     }
 
-    emit IRouter.Escaped(coin);
+    emit Escaped(coin);
 
     // Fetch the amount to escape
     uint256 amount = address(this).balance;
