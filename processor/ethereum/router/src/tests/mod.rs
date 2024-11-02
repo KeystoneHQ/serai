@@ -10,7 +10,7 @@ use alloy_sol_types::SolCall;
 
 use alloy_consensus::TxLegacy;
 
-use alloy_rpc_types_eth::BlockNumberOrTag;
+use alloy_rpc_types_eth::{BlockNumberOrTag, TransactionReceipt};
 use alloy_simple_request_transport::SimpleRequest;
 use alloy_rpc_client::ClientBuilder;
 use alloy_provider::RootProvider;
@@ -154,8 +154,16 @@ async fn test_erc20_in_instruction() {
   todo!("TODO")
 }
 
-async fn publish_outs(key: (Scalar, PublicKey), nonce: u64, coin: Coin, fee: U256, outs: OutInstructions) -> TransactionReceipt {
-  let msg = Router::execute_message(nonce, coin, fee, instructions.clone());
+async fn publish_outs(
+  provider: &RootProvider<SimpleRequest>,
+  router: &Router,
+  key: (Scalar, PublicKey),
+  nonce: u64,
+  coin: Coin,
+  fee: U256,
+  outs: OutInstructions,
+) -> TransactionReceipt {
+  let msg = Router::execute_message(nonce, coin, fee, outs.clone());
 
   let nonce = Scalar::random(&mut OsRng);
   let c = Signature::challenge(ProjectivePoint::GENERATOR * nonce, &key.1, &msg);
@@ -163,10 +171,10 @@ async fn publish_outs(key: (Scalar, PublicKey), nonce: u64, coin: Coin, fee: U25
 
   let sig = Signature::new(c, s).unwrap();
 
-  let mut tx = router.execute(coin, fee, instructions, &sig);
+  let mut tx = router.execute(coin, fee, outs, &sig);
   tx.gas_price = 100_000_000_000u128;
   let tx = ethereum_primitives::deterministically_sign(&tx);
-  ethereum_test_primitives::publish_tx(&provider, tx).await
+  ethereum_test_primitives::publish_tx(provider, tx).await
 }
 
 #[tokio::test]
@@ -182,7 +190,7 @@ async fn test_eth_address_out_instruction() {
   ethereum_test_primitives::fund_account(&provider, router.address(), amount).await;
 
   let instructions = OutInstructions::from([].as_slice());
-  let receipt = publish_outs(key, 1, Coin::Ether, fee, instructions);
+  let receipt = publish_outs(&provider, &router, key, 1, Coin::Ether, fee, instructions).await;
   assert!(receipt.status());
   println!("empty execute used {} gas:", receipt.gas_used);
 

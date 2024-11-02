@@ -309,26 +309,36 @@ impl Router {
 
   /// Get the message to be signed in order to update the key for Serai.
   pub fn update_serai_key_message(nonce: u64, key: &PublicKey) -> Vec<u8> {
-    ("updateSeraiKey", U256::try_from(nonce).expect("couldn't convert u64 to u256"), key.eth_repr())
-      .abi_encode_packed()
+    [
+      abi::updateSeraiKeyCall::SELECTOR.as_slice(),
+      &(U256::try_from(nonce).unwrap(), U256::ZERO, key.eth_repr()).abi_encode_params(),
+    ]
+    .concat()
   }
 
   /// Construct a transaction to update the key representing Serai.
   pub fn update_serai_key(&self, public_key: &PublicKey, sig: &Signature) -> TxLegacy {
     TxLegacy {
       to: TxKind::Call(self.1),
-      input: abi::updateSeraiKeyCall::new((public_key.eth_repr().into(), sig.into()))
-        .abi_encode()
-        .into(),
-      gas_limit: 40748 * 120 / 100,
+      input: [
+        abi::updateSeraiKeyCall::SELECTOR.as_slice(),
+        &(abi::Signature::from(sig), public_key.eth_repr()).abi_encode_params(),
+      ]
+      .concat()
+      .into(),
+      gas_limit: 40927 * 120 / 100,
       ..Default::default()
     }
   }
 
   /// Get the message to be signed in order to execute a series of `OutInstruction`s.
   pub fn execute_message(nonce: u64, coin: Coin, fee: U256, outs: OutInstructions) -> Vec<u8> {
-    ("execute".to_string(), U256::try_from(nonce).unwrap(), coin.address(), fee, outs.0)
-      .abi_encode_sequence()
+    [
+      abi::executeCall::SELECTOR.as_slice(),
+      &(U256::try_from(nonce).unwrap(), U256::ZERO, coin.address(), fee, outs.0)
+        .abi_encode_params(),
+    ]
+    .concat()
   }
 
   /// Construct a transaction to execute a batch of `OutInstruction`s.
@@ -336,7 +346,12 @@ impl Router {
     let outs_len = outs.0.len();
     TxLegacy {
       to: TxKind::Call(self.1),
-      input: abi::executeCall::new((coin.address(), fee, outs.0, sig.into())).abi_encode().into(),
+      input: [
+        abi::executeCall::SELECTOR.as_slice(),
+        &(abi::Signature::from(sig), coin.address(), fee, outs.0).abi_encode_params(),
+      ]
+      .concat()
+      .into(),
       // TODO
       gas_limit: 100_000 + ((200_000 + 10_000) * u128::try_from(outs_len).unwrap()),
       ..Default::default()

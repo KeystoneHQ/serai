@@ -126,76 +126,133 @@ contract Router {
   /// @notice Escaping when escape hatch wasn't invoked.
   error EscapeHatchNotInvoked();
 
-  /**
-   * @dev Updates the Serai key at the end of the current function. Executing at the end of the
-   *   current function allows verifying a signature with the current key. This does not update
-   *   `_nextNonce`
-   */
+  /// @dev Updates the Serai key. This does not update `_nextNonce`
   /// @param nonceUpdatedWith The nonce used to update the key
   /// @param newSeraiKey The key updated to
-  modifier updateSeraiKeyAtEndOfFn(uint256 nonceUpdatedWith, bytes32 newSeraiKey) {
-    // Run the function itself
-    _;
-
-    // Update the key
+  function _updateSeraiKey(uint256 nonceUpdatedWith, bytes32 newSeraiKey) private {
     _seraiKey = newSeraiKey;
     emit SeraiKeyUpdated(nonceUpdatedWith, newSeraiKey);
   }
 
   /// @notice The constructor for the relayer
   /// @param initialSeraiKey The initial key for Serai's Ethereum validators
-  constructor(bytes32 initialSeraiKey) updateSeraiKeyAtEndOfFn(0, initialSeraiKey) {
+  constructor(bytes32 initialSeraiKey) {
     // Nonces are incremented by 1 upon account creation, prior to any code execution, per EIP-161
     // This is incompatible with any networks which don't have their nonces start at 0
     _smartContractNonce = 1;
 
-    // We consumed nonce 0 when setting the initial Serai key
+    // Set the Serai key
+    _updateSeraiKey(0, initialSeraiKey);
+
+    // We just consumed nonce 0 when setting the initial Serai key
     _nextNonce = 1;
 
     // We haven't escaped to any address yet
     _escapedTo = address(0);
   }
 
-  /// @dev Verify a signature
-  /// @param message The message to pass to the Schnorr contract
-  /// @param signature The signature by the current key for this message
-  function verifySignature(bytes32 message, Signature calldata signature) private {
+  /**
+   * @dev
+   *   Verify a signature of the calldata, placed immediately after the function selector. The calldata
+   *   should be signed with the nonce taking the place of the signature's commitment to its nonce, and
+   *   the signature solution zeroed.
+   */
+  function verifySignature()
+    private
+    returns (uint256 nonceUsed, bytes memory message, bytes32 messageHash)
+  {
     // If the escape hatch was triggered, reject further signatures
     if (_escapedTo != address(0)) {
       revert EscapeHatchInvoked();
     }
-    // Verify the signature
-    if (!Schnorr.verify(_seraiKey, message, signature.c, signature.s)) {
+
+    message = msg.data;
+    uint256 messageLen = message.length;
+    /*
+      function selector, signature
+
+      This check means we don't read memory, and as we attempt to clear portions, write past it
+      (triggering undefined behavior).
+    */
+    if (messageLen < 68) {
       revert InvalidSignature();
     }
+
+    // Read _nextNonce into memory as the nonce we'll use
+    nonceUsed = _nextNonce;
+
+    // Declare memory to copy the signature out to
+    bytes32 signatureC;
+    bytes32 signatureS;
+
+    // slither-disable-next-line assembly
+    assembly {
+      // Read the signature (placed after the function signature)
+      signatureC := mload(add(message, 36))
+      signatureS := mload(add(message, 68))
+
+      // Overwrite the signature challenge with the nonce
+      mstore(add(message, 36), nonceUsed)
+      // Overwrite the signature response with 0
+      mstore(add(message, 68), 0)
+
+      // Calculate the message hash
+      messageHash := keccak256(add(message, 32), messageLen)
+    }
+
+    // Verify the signature
+    if (!Schnorr.verify(_seraiKey, messageHash, signatureC, signatureS)) {
+      revert InvalidSignature();
+    }
+
     // Set the next nonce
     unchecked {
-      _nextNonce++;
+      _nextNonce = nonceUsed + 1;
+    }
+
+    /*
+      Advance the message past the function selector, enabling decoding the arguments. Ideally, we'd
+      also advance past the signature (to simplify decoding arguments and save some memory). This
+      would transfrom message from:
+
+        message (pointer)
+               v
+               ------------------------------------------------------------
+               | 32-byte length | 4-byte selector | Signature | Arguments |
+               ------------------------------------------------------------
+
+      to:
+
+                 message (pointer)
+                        v
+        ----------------------------------------------
+        | Junk 68 bytes | 32-byte length | Arguments |
+        ----------------------------------------------
+
+      Unfortunately, doing so corrupts the offsets defined within the ABI itself. We settle for a
+      transform to:
+
+                message (pointer)
+                       v
+        ---------------------------------------------------------
+        | Junk 4 bytes | 32-byte length | Signature | Arguments |
+        ---------------------------------------------------------
+    */
+    // slither-disable-next-line assembly
+    assembly {
+      message := add(message, 4)
+      mstore(message, sub(messageLen, 4))
     }
   }
 
   /// @notice Update the key representing Serai's Ethereum validators
   /// @dev This assumes the key is correct. No checks on it are performed
-  /// @param newSeraiKey The key to update to
-  /// @param signature The signature by the current key authorizing this update
-  function updateSeraiKey(bytes32 newSeraiKey, Signature calldata signature)
-    external
-    updateSeraiKeyAtEndOfFn(_nextNonce, newSeraiKey)
-  {
-    /*
-      This DST needs a length prefix as well to prevent DSTs potentially being substrings of each
-      other, yet this is fine for our well-defined, extremely-limited use.
-
-      We don't encode the chain ID as Serai generates independent keys for each integration. If
-      Ethereum L2s are integrated, and they reuse the Ethereum validator set, we would use the
-      existing Serai key yet we'd apply an off-chain derivation scheme to bind it to specific
-      networks. This also lets Serai identify EVMs per however it wants, solving the edge case where
-      two instances of the EVM share a chain ID for whatever horrific reason.
-
-      This uses encodePacked as all items present here are of fixed length.
-    */
-    bytes32 message = keccak256(abi.encodePacked("updateSeraiKey", _nextNonce, newSeraiKey));
-    verifySignature(message, signature);
+  // @param signature The signature by the current key authorizing this update
+  // @param newSeraiKey The key to update to
+  function updateSeraiKey() external {
+    (uint256 nonceUsed, bytes memory args,) = verifySignature();
+    (,, bytes32 newSeraiKey) = abi.decode(args, (bytes32, bytes32, bytes32));
+    _updateSeraiKey(nonceUsed, newSeraiKey);
   }
 
   /// @notice Transfer coins into Serai with an instruction
@@ -357,26 +414,19 @@ contract Router {
    * @dev All `OutInstruction`s in a batch are only for a single coin to simplify handling of the
    *  fee
    */
-  /// @param coin The coin all of these `OutInstruction`s are for
-  /// @param fee The fee to pay (in coin) to the caller for their relaying of this batch
-  /// @param outs The `OutInstruction`s to act on
-  /// @param signature The signature by the current key for Serai's Ethereum validators
+  // @param signature The signature by the current key for Serai's Ethereum validators
+  // @param coin The coin all of these `OutInstruction`s are for
+  // @param fee The fee to pay (in coin) to the caller for their relaying of this batch
+  // @param outs The `OutInstruction`s to act on
   // Each individual call is explicitly metered to ensure there isn't a DoS here
   // slither-disable-next-line calls-loop
-  function execute(
-    address coin,
-    uint256 fee,
-    OutInstruction[] calldata outs,
-    Signature calldata signature
-  ) external {
-    // Verify the signature
-    // This uses `encode`, not `encodePacked`, as `outs` is of variable length
-    // TODO: Use a custom encode in verifySignature here with assembly (benchmarking before/after)
-    bytes32 message = keccak256(abi.encode("execute", _nextNonce, coin, fee, outs));
-    verifySignature(message, signature);
+  function execute() external {
+    (uint256 nonceUsed, bytes memory args, bytes32 message) = verifySignature();
+    (,, address coin, uint256 fee, OutInstruction[] memory outs) =
+      abi.decode(args, (bytes32, bytes32, address, uint256, OutInstruction[]));
 
     // TODO: Also include a bit mask here
-    emit Executed(_nextNonce, message);
+    emit Executed(nonceUsed, message);
 
     /*
       Since we don't have a re-entrancy guard, it is possible for instructions from later batches to
@@ -439,9 +489,14 @@ contract Router {
 
   /// @notice Escapes to a new smart contract
   /// @dev This should be used upon an invariant being reached or new functionality being needed
-  /// @param escapeTo The address to escape to
-  /// @param signature The signature by the current key for Serai's Ethereum validators
-  function escapeHatch(address escapeTo, Signature calldata signature) external {
+  // @param signature The signature by the current key for Serai's Ethereum validators
+  // @param escapeTo The address to escape to
+  function escapeHatch() external {
+    // Verify the signature
+    (, bytes memory args,) = verifySignature();
+
+    (,, address escapeTo) = abi.decode(args, (bytes32, bytes32, address));
+
     if (escapeTo == address(0)) {
       revert InvalidEscapeAddress();
     }
@@ -453,10 +508,6 @@ contract Router {
     if (_escapedTo != address(0)) {
       revert EscapeHatchInvoked();
     }
-
-    // Verify the signature
-    bytes32 message = keccak256(abi.encodePacked("escapeHatch", _nextNonce, escapeTo));
-    verifySignature(message, signature);
 
     _escapedTo = escapeTo;
     emit EscapeHatch(escapeTo);
