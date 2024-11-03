@@ -218,7 +218,8 @@ contract Router is IRouterWithoutCollisions {
         Require there was nothing returned, which is done by some non-standard tokens, or that the
         ERC20 contract did in fact return true
       */
-      bool nonStandardResOrTrue = (res.length == 0) || abi.decode(res, (bool));
+      bool nonStandardResOrTrue =
+        (res.length == 0) || ((res.length == 32) && abi.decode(res, (bool)));
       if (!(success && nonStandardResOrTrue)) revert TransferFromFailed();
     }
 
@@ -251,7 +252,16 @@ contract Router is IRouterWithoutCollisions {
   /// @param to The address to transfer the coins to
   /// @param coin The coin to transfer
   /// @param amount The amount of the coin to transfer
-  function erc20TransferOut(address to, address coin, uint256 amount) private {
+  /**
+   * @return success If the coins were successfully transferred out. This is defined as if the
+   *   call succeeded and returned true or nothing.
+   */
+  // execute has this annotation yet this still flags (even when it doesn't have its own loop)
+  // slither-disable-next-line calls-loop
+  function erc20TransferOut(address to, address coin, uint256 amount)
+    private
+    returns (bool success)
+  {
     /*
       The ERC20s integrated are presumed to have a constant gas cost, meaning this can only be
       insufficient:
@@ -270,48 +280,39 @@ contract Router is IRouterWithoutCollisions {
     */
     uint256 _gas = 100_000;
 
-    bytes memory _calldata = abi.encodeWithSelector(IERC20.transfer.selector, to, amount);
-    bool _success;
-    // slither-disable-next-line assembly
-    assembly {
-      /*
-        `coin` is trusted so we can accept the risk of a return bomb here, yet we won't check the
-        return value anyways so there's no need to spend the gas decoding it. We assume failures
-        are the fault of the recipient, not us, the sender. We don't want to have such errors block
-        the queue of transfers to make.
+    /*
+      `coin` is either signed (from `execute`) or called from `escape` (which can safely be
+      arbitrarily called). We accordingly don't need to be worried about return bombs here.
+    */
+    // slither-disable-next-line return-bomb
+    (bool erc20Success, bytes memory res) =
+      address(coin).call{ gas: _gas }(abi.encodeWithSelector(IERC20.transfer.selector, to, amount));
 
-        If there ever was some invariant broken, off-chain actions is presumed to occur to move to a
-        new smart contract with whatever necessary changes made/response occurring.
-      */
-      _success :=
-        call(
-          _gas,
-          coin,
-          // Ether value
-          0,
-          // calldata
-          add(_calldata, 0x20),
-          mload(_calldata),
-          // return data
-          0,
-          0
-        )
-    }
+    /*
+      Require there was nothing returned, which is done by some non-standard tokens, or that the
+      ERC20 contract did in fact return true.
+    */
+    // slither-disable-next-line incorrect-equality
+    bool nonStandardResOrTrue = (res.length == 0) || ((res.length == 32) && abi.decode(res, (bool)));
+    success = erc20Success && nonStandardResOrTrue;
   }
 
   /// @dev Perform an ETH/ERC20 transfer out
   /// @param to The address to transfer the coins to
   /// @param coin The coin to transfer (address(0) if Ether)
   /// @param amount The amount of the coin to transfer
-  function transferOut(address to, address coin, uint256 amount) private {
+  /**
+   * @return success If the coins were successfully transferred out. For Ethereum, this is if the
+   *   call succeeded. For the ERC20, it's if the call succeeded and returned true or nothing.
+   */
+  function transferOut(address to, address coin, uint256 amount) private returns (bool success) {
     if (coin == address(0)) {
       // Enough gas to service the transfer and a minimal amount of logic
       uint256 _gas = 5_000;
       // This uses assembly to prevent return bombs
-      bool _success;
       // slither-disable-next-line assembly
       assembly {
-        _success :=
+        success :=
           call(
             _gas,
             to,
@@ -325,7 +326,7 @@ contract Router is IRouterWithoutCollisions {
           )
       }
     } else {
-      erc20TransferOut(to, coin, amount);
+      success = erc20TransferOut(to, coin, amount);
     }
   }
 
@@ -362,7 +363,7 @@ contract Router is IRouterWithoutCollisions {
   // @param fee The fee to pay (in coin) to the caller for their relaying of this batch
   // @param outs The `OutInstruction`s to act on
   // Each individual call is explicitly metered to ensure there isn't a DoS here
-  // slither-disable-next-line calls-loop
+  // slither-disable-next-line calls-loop,reentrancy-events
   function execute4DE42904() external {
     /*
       Prevent re-entrancy.
@@ -387,19 +388,13 @@ contract Router is IRouterWithoutCollisions {
     (,, address coin, uint256 fee, IRouter.OutInstruction[] memory outs) =
       abi.decode(args, (bytes32, bytes32, address, uint256, IRouter.OutInstruction[]));
 
-    // TODO: Also include a bit mask here
-    emit Executed(nonceUsed, message);
-
-    /*
-      Since we don't have a re-entrancy guard, it is possible for instructions from later batches to
-      be executed before these instructions. This is deemed fine. We only require later batches be
-      relayed after earlier batches in order to form backpressure. This means if a batch has a fee
-      which isn't worth relaying the batch for, so long as later batches are sufficiently
-      worthwhile, every batch will be relayed.
-    */
+    // Define a bitmask to store the results of all following `OutInstruction`s
+    bytes memory results = new bytes((outs.length + 7) / 8);
 
     // slither-disable-next-line reentrancy-events
     for (uint256 i = 0; i < outs.length; i++) {
+      bool success = true;
+
       // If the destination is an address, we perform a direct transfer
       if (outs[i].destinationType == IRouter.DestinationType.Address) {
         /*
@@ -408,7 +403,7 @@ contract Router is IRouterWithoutCollisions {
           corrected batch using this nonce.
         */
         address destination = abi.decode(outs[i].destination, (address));
-        transferOut(destination, coin, outs[i].amount);
+        success = transferOut(destination, coin, outs[i].amount);
       } else {
         // Prepare the transfer
         uint256 ethValue = 0;
@@ -424,27 +419,53 @@ contract Router is IRouterWithoutCollisions {
           address nextAddress = address(
             uint160(uint256(keccak256(abi.encodePacked(address(this), _smartContractNonce))))
           );
-          erc20TransferOut(nextAddress, coin, outs[i].amount);
+
+          success = erc20TransferOut(nextAddress, coin, outs[i].amount);
         }
 
-        (IRouter.CodeDestination memory destination) =
-          abi.decode(outs[i].destination, (IRouter.CodeDestination));
-
         /*
-          Perform the deployment with the defined gas budget.
+          If success is false, we presume it a fault with an ERC20, not with us, and move on. If we
+          reverted here, we'd halt the execution of every single batch (now and future). By simply
+          moving on, we may have reached some invariant with this specific ERC20, yet the project
+          entire isn't put into a halted state.
 
-          We don't care if the following call fails as we don't want to block/retry if it does.
-          Failures are considered the recipient's fault. We explicitly do not want the surface
-          area/inefficiency of caching these for later attempted retires.
-
-          We don't have to worry about a return bomb here as this is our own function which doesn't
-          return any data.
+          Since the recipient is a fresh account, this presumably isn't the recipient being
+          blacklisted (the most likely invariant upon the integration of a popular, standard ERC20).
+          That means there likely is some invariant with this integration to be resolved later.
+          Since reaching this invariant state requires an invariant, and for the reasons above, this
+          is accepted.
         */
-        address(this).call{ gas: destination.gasLimit, value: ethValue }(
-          abi.encodeWithSelector(Router.executeArbitraryCode.selector, destination.code)
-        );
+        if (success) {
+          (IRouter.CodeDestination memory destination) =
+            abi.decode(outs[i].destination, (IRouter.CodeDestination));
+
+          /*
+            Perform the deployment with the defined gas budget.
+
+            We don't care if the following call fails as we don't want to block/retry if it does.
+            Failures are considered the recipient's fault. We explicitly do not want the surface
+            area/inefficiency of caching these for later attempted retires.
+
+            We don't have to worry about a return bomb here as this is our own function which
+            doesn't return any data.
+          */
+          (success,) = address(this).call{ gas: destination.gasLimit, value: ethValue }(
+            abi.encodeWithSelector(Router.executeArbitraryCode.selector, destination.code)
+          );
+        }
+      }
+
+      if (success) {
+        results[i / 8] |= bytes1(uint8(1 << (7 - (i % 8))));
       }
     }
+
+    /*
+      Emit execution with the status of all included events.
+
+      This is an effect after interactions yet we have a reentrancy guard making this safe.
+    */
+    emit Executed(nonceUsed, message, results);
 
     // Transfer the fee to the relayer
     transferOut(msg.sender, coin, fee);
