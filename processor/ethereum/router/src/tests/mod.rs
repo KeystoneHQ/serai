@@ -23,6 +23,18 @@ use ethereum_deployer::Deployer;
 use crate::{Coin, OutInstructions, Router};
 
 #[test]
+fn execute_reentrancy_guard() {
+  let hash = alloy_core::primitives::keccak256(b"ReentrancyGuard Router.execute");
+  assert_eq!(
+    alloy_core::primitives::hex::encode(
+      (U256::from_be_slice(hash.as_ref()) - U256::from(1u8)).to_be_bytes::<32>()
+    ),
+    // Constant from the Router contract
+    "cf124a063de1614fedbd6b47187f98bf8873a1ae83da5c179a5881162f5b2401",
+  );
+}
+
+#[test]
 fn selector_collisions() {
   assert_eq!(
     crate::_irouter_abi::IRouter::executeCall::SELECTOR,
@@ -31,6 +43,10 @@ fn selector_collisions() {
   assert_eq!(
     crate::_irouter_abi::IRouter::updateSeraiKeyCall::SELECTOR,
     crate::_router_abi::Router::updateSeraiKey5A8542A2Call::SELECTOR
+  );
+  assert_eq!(
+    crate::_irouter_abi::IRouter::escapeHatchCall::SELECTOR,
+    crate::_router_abi::Router::escapeHatchDCDD91CCCall::SELECTOR
   );
 }
 

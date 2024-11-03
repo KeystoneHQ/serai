@@ -25,6 +25,14 @@ import "IRouter.sol";
 /// @author Luke Parker <lukeparker@serai.exchange>
 /// @notice Intakes coins for the Serai network and handles relaying batches of transfers out
 contract Router is IRouterWithoutCollisions {
+  /// @dev The address in transient storage used for the reentrancy guard
+  bytes32 constant EXECUTE_REENTRANCY_GUARD_SLOT = bytes32(
+    /*
+      keccak256("ReentrancyGuard Router.execute") - 1
+    */
+    0xcf124a063de1614fedbd6b47187f98bf8873a1ae83da5c179a5881162f5b2401
+  );
+
   /**
    * @dev The next nonce used to determine the address of contracts deployed with CREATE. This is
    *   used to predict the addresses of deployed contracts ahead of time.
@@ -356,6 +364,25 @@ contract Router is IRouterWithoutCollisions {
   // Each individual call is explicitly metered to ensure there isn't a DoS here
   // slither-disable-next-line calls-loop
   function execute4DE42904() external {
+    /*
+      Prevent re-entrancy.
+
+      We emit a bitmask of which `OutInstruction`s succeeded. Doing that requires executing the
+      `OutInstruction`s, which may re-enter here. While our application of CEI with verifySignature
+      prevents replays, re-entrancy would allow out-of-order execution of batches (despite their
+      in-order start of execution) which isn't a headache worth dealing with.
+    */
+    bytes32 executeReentrancyGuardSlot = EXECUTE_REENTRANCY_GUARD_SLOT;
+    bytes32 priorEntered;
+    // slither-disable-next-line assembly
+    assembly {
+      priorEntered := tload(executeReentrancyGuardSlot)
+      tstore(executeReentrancyGuardSlot, 1)
+    }
+    if (priorEntered != bytes32(0)) {
+      revert ReenteredExecute();
+    }
+
     (uint256 nonceUsed, bytes memory args, bytes32 message) = verifySignature();
     (,, address coin, uint256 fee, IRouter.OutInstruction[] memory outs) =
       abi.decode(args, (bytes32, bytes32, address, uint256, IRouter.OutInstruction[]));

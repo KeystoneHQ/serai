@@ -36,10 +36,14 @@ interface IRouterWithoutCollisions {
   error EscapeHatchInvoked();
   /// @notice The signature was invalid
   error InvalidSignature();
+
   /// @notice The amount specified didn't match `msg.value`
   error AmountMismatchesMsgValue();
   /// @notice The call to an ERC20's `transferFrom` failed
   error TransferFromFailed();
+
+  /// @notice `execute` was re-entered
+  error ReenteredExecute();
 
   /// @notice An invalid address to escape to was specified.
   error InvalidEscapeAddress();
