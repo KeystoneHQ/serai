@@ -73,7 +73,8 @@ pub(crate) fn queue_message(
   assert!(matches!(meta.from, Service::Coordinator) ^ matches!(meta.to, Service::Coordinator));
 
   // Lock the queue
-  let queue_lock = QUEUES.read().unwrap()[&(meta.from, meta.to)].write().unwrap();
+  let queue_lock = QUEUES.read().unwrap();
+  let mut queue_lock = queue_lock[&(meta.from, meta.to)].write().unwrap();
 
   // Verify (from, to, intent) hasn't been prior seen
   fn key(domain: &'static [u8], key: impl AsRef<[u8]>) -> Vec<u8> {

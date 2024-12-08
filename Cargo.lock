@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "alloy-simple-request-transport"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy-json-rpc",
  "alloy-transport",

@@ -36,7 +36,7 @@ db_channel! {
 
 /// The type used for the database.
 #[cfg(all(feature = "parity-db", not(feature = "rocksdb")))]
-pub type Db = serai_db::ParityDb;
+pub type Db = std::sync::Arc<serai_db::ParityDb>;
 /// The type used for the database.
 #[cfg(feature = "rocksdb")]
 pub type Db = serai_db::RocksDB;
