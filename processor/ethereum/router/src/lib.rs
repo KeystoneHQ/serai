@@ -70,16 +70,15 @@ pub enum Coin {
   /// Ether, the native coin of Ethereum.
   Ether,
   /// An ERC20 token.
-  Erc20([u8; 20]),
+  Erc20(Address),
 }
 
 impl Coin {
   fn address(&self) -> Address {
-    (match self {
-      Coin::Ether => [0; 20],
+    match self {
+      Coin::Ether => [0; 20].into(),
       Coin::Erc20(address) => *address,
-    })
-    .into()
+    }
   }
 
   /// Read a `Coin`.
@@ -91,7 +90,7 @@ impl Coin {
       1 => {
         let mut address = [0; 20];
         reader.read_exact(&mut address)?;
-        Coin::Erc20(address)
+        Coin::Erc20(address.into())
       }
       _ => Err(io::Error::other("unrecognized Coin type"))?,
     })
@@ -103,7 +102,7 @@ impl Coin {
       Coin::Ether => writer.write_all(&[0]),
       Coin::Erc20(token) => {
         writer.write_all(&[1])?;
-        writer.write_all(token)
+        writer.write_all(token.as_ref())
       }
     }
   }
@@ -275,10 +274,12 @@ impl Executed {
 #[derive(Clone, Debug)]
 pub struct Router(Arc<RootProvider<SimpleRequest>>, Address);
 impl Router {
-  const DEPLOYMENT_GAS: u64 = 995_000;
+  const DEPLOYMENT_GAS: u64 = 1_000_000;
   const CONFIRM_NEXT_SERAI_KEY_GAS: u64 = 58_000;
   const UPDATE_SERAI_KEY_GAS: u64 = 61_000;
   const EXECUTE_BASE_GAS: u64 = 48_000;
+  const ESCAPE_HATCH_GAS: u64 = 58_000;
+  const ESCAPE_GAS: u64 = 200_000;
 
   fn code() -> Vec<u8> {
     const BYTECODE: &[u8] =
@@ -395,11 +396,40 @@ impl Router {
     }
   }
 
+  /// Get the message to be signed in order to trigger the escape hatch.
+  pub fn escape_hatch_message(nonce: u64, escape_to: Address) -> Vec<u8> {
+    abi::escapeHatchCall::new((
+      abi::Signature { c: U256::try_from(nonce).unwrap().into(), s: U256::ZERO.into() },
+      escape_to,
+    ))
+    .abi_encode()
+  }
+
+  /// Construct a transaction to trigger the escape hatch.
+  pub fn escape_hatch(&self, escape_to: Address, sig: &Signature) -> TxLegacy {
+    TxLegacy {
+      to: TxKind::Call(self.1),
+      input: abi::escapeHatchCall::new((abi::Signature::from(sig), escape_to)).abi_encode().into(),
+      gas_limit: Self::ESCAPE_HATCH_GAS * 120 / 100,
+      ..Default::default()
+    }
+  }
+
+  /// Construct a transaction to escape coins via the escape hatch.
+  pub fn escape(&self, coin: Address) -> TxLegacy {
+    TxLegacy {
+      to: TxKind::Call(self.1),
+      input: abi::escapeCall::new((coin,)).abi_encode().into(),
+      gas_limit: Self::ESCAPE_GAS,
+      ..Default::default()
+    }
+  }
+
   /// Fetch the `InInstruction`s emitted by the Router from this block.
   pub async fn in_instructions(
     &self,
     block: u64,
-    allowed_tokens: &HashSet<[u8; 20]>,
+    allowed_tokens: &HashSet<Address>,
   ) -> Result<Vec<InInstruction>, RpcError<TransportErrorKind>> {
     // The InInstruction events for this block
     let filter = Filter::new().from_block(block).to_block(block).address(self.1);
@@ -451,7 +481,7 @@ impl Router {
       let coin = if log.coin.0 == [0; 20] {
         Coin::Ether
       } else {
-        let token = *log.coin.0;
+        let token = log.coin;
 
         if !allowed_tokens.contains(&token) {
           continue;
@@ -490,7 +520,7 @@ impl Router {
           }
 
           // Check if this log is from the token we expected to be transferred
-          if tx_log.address().0 != token {
+          if tx_log.address() != token {
             continue;
           }
           // Check if this is a transfer log

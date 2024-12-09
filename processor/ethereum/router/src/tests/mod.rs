@@ -177,7 +177,6 @@ async fn test_update_serai_key() {
 #[tokio::test]
 async fn test_eth_in_instruction() {
   let (_anvil, provider, router, key) = setup_test().await;
-  // TODO: Do we want to allow InInstructions before any key has been confirmed?
   confirm_next_serai_key(&provider, &router, 1, key).await;
 
   let amount = U256::try_from(OsRng.next_u64()).unwrap();
@@ -291,7 +290,52 @@ async fn test_erc20_code_out_instruction() {
   todo!("TODO")
 }
 
+async fn escape_hatch(
+  provider: &Arc<RootProvider<SimpleRequest>>,
+  router: &Router,
+  nonce: u64,
+  key: (Scalar, PublicKey),
+  escape_to: Address,
+) -> TransactionReceipt {
+  let msg = Router::escape_hatch_message(nonce, escape_to);
+
+  let nonce = Scalar::random(&mut OsRng);
+  let c = Signature::challenge(ProjectivePoint::GENERATOR * nonce, &key.1, &msg);
+  let s = nonce + (c * key.0);
+
+  let sig = Signature::new(c, s).unwrap();
+
+  let mut tx = router.escape_hatch(escape_to, &sig);
+  tx.gas_price = 100_000_000_000;
+  let tx = ethereum_primitives::deterministically_sign(&tx);
+  let receipt = ethereum_test_primitives::publish_tx(provider, tx).await;
+  assert!(receipt.status());
+  assert_eq!(u128::from(Router::ESCAPE_HATCH_GAS), ((receipt.gas_used + 1000) / 1000) * 1000);
+  receipt
+}
+
+async fn escape(
+  provider: &Arc<RootProvider<SimpleRequest>>,
+  router: &Router,
+  coin: Coin,
+) -> TransactionReceipt {
+  let mut tx = router.escape(coin.address());
+  tx.gas_price = 100_000_000_000;
+  let tx = ethereum_primitives::deterministically_sign(&tx);
+  let receipt = ethereum_test_primitives::publish_tx(provider, tx).await;
+  assert!(receipt.status());
+  receipt
+}
+
 #[tokio::test]
 async fn test_escape_hatch() {
-  todo!("TODO")
+  let (_anvil, provider, router, key) = setup_test().await;
+  confirm_next_serai_key(&provider, &router, 1, key).await;
+  let escape_to: Address = {
+    let mut escape_to = [0; 20];
+    OsRng.fill_bytes(&mut escape_to);
+    escape_to.into()
+  };
+  escape_hatch(&provider, &router, 2, key, escape_to).await;
+  escape(&provider, &router, Coin::Ether).await;
 }

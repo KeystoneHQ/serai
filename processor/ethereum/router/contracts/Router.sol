@@ -243,6 +243,16 @@ contract Router is IRouterWithoutCollisions {
   // Re-entrancy doesn't bork this function
   // slither-disable-next-line reentrancy-events
   function inInstruction(address coin, uint256 amount, bytes memory instruction) external payable {
+    // Check there is an active key
+    if (_seraiKey == bytes32(0)) {
+      revert InvalidSeraiKey();
+    }
+
+    // Don't allow further InInstructions once the escape hatch has been invoked
+    if (_escapedTo != address(0)) {
+      revert EscapeHatchInvoked();
+    }
+
     // Check the transfer
     if (coin == address(0)) {
       if (amount != msg.value) revert AmountMismatchesMsgValue();
@@ -313,7 +323,8 @@ contract Router is IRouterWithoutCollisions {
 
       This should be in such excess of the gas requirements of integrated tokens we'll survive
       repricing, so long as the repricing doesn't revolutionize EVM gas costs as we know it. In such
-      a case, Serai would have to migrate to a new smart contract using `escapeHatch`.
+      a case, Serai would have to migrate to a new smart contract using `escapeHatch`. That also
+      covers all other potential exceptional cases.
     */
     uint256 _gas = 100_000;
 

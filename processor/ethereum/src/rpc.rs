@@ -165,7 +165,7 @@ impl<D: Db> ScannerFeed for Rpc<D> {
         let mut instructions = router.in_instructions(block.number, &HashSet::from(TOKENS)).await?;
 
         for token in TOKENS {
-          for TopLevelTransfer { id, from, amount, data } in Erc20::new(provider.clone(), token)
+          for TopLevelTransfer { id, from, amount, data } in Erc20::new(provider.clone(), **token)
             .top_level_transfers(block.number, router.address())
             .await?
           {
