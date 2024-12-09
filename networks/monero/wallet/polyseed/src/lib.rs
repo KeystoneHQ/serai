@@ -106,20 +106,19 @@ const POLYSEED_KEYGEN_ITERATIONS: u32 = 10000;
 const COIN: u16 = 0;
 
 /// An error when working with a Polyseed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "std", derive(thiserror::Error))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum PolyseedError {
   /// The seed was invalid.
-  #[cfg_attr(feature = "std", error("invalid seed"))]
+  #[error("invalid seed")]
   InvalidSeed,
   /// The entropy was invalid.
-  #[cfg_attr(feature = "std", error("invalid entropy"))]
+  #[error("invalid entropy")]
   InvalidEntropy,
   /// The checksum did not match the data.
-  #[cfg_attr(feature = "std", error("invalid checksum"))]
+  #[error("invalid checksum")]
   InvalidChecksum,
   /// Unsupported feature bits were set.
-  #[cfg_attr(feature = "std", error("unsupported features"))]
+  #[error("unsupported features")]
   UnsupportedFeatures,
 }
 

@@ -26,19 +26,18 @@ const SEED_LENGTH: usize = 24;
 const SEED_LENGTH_WITH_CHECKSUM: usize = 25;
 
 /// An error when working with a seed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "std", derive(thiserror::Error))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SeedError {
-  #[cfg_attr(feature = "std", error("invalid seed"))]
+  #[error("invalid seed")]
   /// The seed was invalid.
   InvalidSeed,
   /// The checksum did not match the data.
-  #[cfg_attr(feature = "std", error("invalid checksum"))]
+  #[error("invalid checksum")]
   InvalidChecksum,
   /// The deprecated English language option was used with a checksum.
   ///
   /// The deprecated English language option did not include a checksum.
-  #[cfg_attr(feature = "std", error("deprecated English language option included a checksum"))]
+  #[error("deprecated English language option included a checksum")]
   DeprecatedEnglishWithChecksum,
 }
 

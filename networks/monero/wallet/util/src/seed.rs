@@ -11,20 +11,19 @@ use original::{SeedError as OriginalSeedError, Seed as OriginalSeed};
 use polyseed::{PolyseedError, Polyseed};
 
 /// An error from working with seeds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "std", derive(thiserror::Error))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum SeedError {
   /// The seed was invalid.
-  #[cfg_attr(feature = "std", error("invalid seed"))]
+  #[error("invalid seed")]
   InvalidSeed,
   /// The entropy was invalid.
-  #[cfg_attr(feature = "std", error("invalid entropy"))]
+  #[error("invalid entropy")]
   InvalidEntropy,
   /// The checksum did not match the data.
-  #[cfg_attr(feature = "std", error("invalid checksum"))]
+  #[error("invalid checksum")]
   InvalidChecksum,
   /// Unsupported features were enabled.
-  #[cfg_attr(feature = "std", error("unsupported features"))]
+  #[error("unsupported features")]
   UnsupportedFeatures,
 }
 

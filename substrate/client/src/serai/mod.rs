@@ -55,7 +55,7 @@ impl Block {
   }
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum SeraiError {
   #[error("failed to communicate with serai")]
   ConnectionError,

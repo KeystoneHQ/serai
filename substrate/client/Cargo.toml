@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 zeroize = "^1.5"
-thiserror = { version = "1", optional = true }
+thiserror = { version = "2", default-features = false, optional = true }
 
 bitvec = { version = "1", default-features = false, features = ["alloc", "serde"] }
 
@@ -60,7 +60,7 @@ dockertest = "0.5"
 serai-docker-tests = { path = "../../tests/docker" }
 
 [features]
-serai = ["thiserror", "serde", "serde_json", "serai-abi/serde", "multiaddr", "sp-core", "sp-runtime", "frame-system", "simple-request"]
+serai = ["thiserror/std", "serde", "serde_json", "serai-abi/serde", "multiaddr", "sp-core", "sp-runtime", "frame-system", "simple-request"]
 borsh = ["serai-abi/borsh"]
 
 networks = []

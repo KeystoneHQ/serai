@@ -4,7 +4,6 @@
 
 use core::fmt::{self, Debug};
 
-#[cfg(feature = "std")]
 use thiserror::Error;
 
 use zeroize::Zeroize;
@@ -67,8 +66,7 @@ impl fmt::Display for Participant {
 }
 
 /// Various errors possible during key generation.
-#[derive(Clone, PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "std", derive(Error))]
+#[derive(Clone, PartialEq, Eq, Debug, Error)]
 pub enum DkgError<B: Clone + PartialEq + Eq + Debug> {
   /// A parameter was zero.
   #[cfg_attr(feature = "std", error("a parameter was 0 (threshold {0}, participants {1})"))]

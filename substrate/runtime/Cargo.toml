@@ -19,7 +19,7 @@ ignored = ["scale", "scale-info"]
 workspace = true
 
 [dependencies]
-hashbrown = { version = "0.14", default-features = false, features = ["ahash", "inline-more"] }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 
 scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
 scale-info = { version = "2", default-features = false, features = ["derive"] }

@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 spin = { version = "0.9", default-features = false, features = ["use_ticket_mutex", "lazy"] }
-hashbrown = { version = "0.14", default-features = false, features = ["ahash", "inline-more"] }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher", "inline-more"] }
 
 [features]
 std = []
