@@ -6,7 +6,7 @@ license = "MIT"
 repository = "https://github.com/serai-dex/serai/tree/develop/networks/ethereum/alloy-simple-request-transport"
 authors = ["Luke Parker <lukeparker5132@gmail.com>"]
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.81"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -16,13 +16,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [dependencies]
-tower = "0.4"
+tower = "0.5"
 
 serde_json = { version = "1", default-features = false }
 simple-request = { path = "../../../common/request", version = "0.1", default-features = false }
 
-alloy-json-rpc = { version = "0.3", default-features = false }
-alloy-transport = { version = "0.3", default-features = false }
+alloy-json-rpc = { version = "0.7", default-features = false }
+alloy-transport = { version = "0.7", default-features = false }
 
 [features]
 default = ["tls"]

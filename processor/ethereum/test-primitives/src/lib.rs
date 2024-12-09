@@ -5,7 +5,7 @@
 use k256::{elliptic_curve::sec1::ToEncodedPoint, ProjectivePoint};
 
 use alloy_core::{
-  primitives::{Address, U256, Bytes, Signature, TxKind},
+  primitives::{Address, U256, Bytes, PrimitiveSignature, TxKind},
   hex::FromHex,
 };
 use alloy_consensus::{SignableTransaction, TxLegacy, Signed};
@@ -46,7 +46,7 @@ pub async fn publish_tx(
 
   let (tx, sig, _) = tx.into_parts();
   let mut bytes = vec![];
-  tx.encode_with_signature_fields(&sig, &mut bytes);
+  tx.into_signed(sig).eip2718_encode(&mut bytes);
   let pending_tx = provider.send_raw_transaction(&bytes).await.unwrap();
   pending_tx.get_receipt().await.unwrap()
 }
@@ -111,7 +111,7 @@ pub async fn send(
   );
 
   let mut bytes = vec![];
-  tx.encode_with_signature_fields(&Signature::from(sig), &mut bytes);
+  tx.into_signed(PrimitiveSignature::from(sig)).eip2718_encode(&mut bytes);
   let pending_tx = provider.send_raw_transaction(&bytes).await.unwrap();
   pending_tx.get_receipt().await.unwrap()
 }

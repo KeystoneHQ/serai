@@ -37,12 +37,16 @@ fn execute_reentrancy_guard() {
 #[test]
 fn selector_collisions() {
   assert_eq!(
-    crate::_irouter_abi::IRouter::executeCall::SELECTOR,
-    crate::_router_abi::Router::execute4DE42904Call::SELECTOR
+    crate::_irouter_abi::IRouter::confirmNextSeraiKeyCall::SELECTOR,
+    crate::_router_abi::Router::confirmNextSeraiKey34AC53ACCall::SELECTOR
   );
   assert_eq!(
     crate::_irouter_abi::IRouter::updateSeraiKeyCall::SELECTOR,
     crate::_router_abi::Router::updateSeraiKey5A8542A2Call::SELECTOR
+  );
+  assert_eq!(
+    crate::_irouter_abi::IRouter::executeCall::SELECTOR,
+    crate::_router_abi::Router::execute4DE42904Call::SELECTOR
   );
   assert_eq!(
     crate::_irouter_abi::IRouter::escapeHatchCall::SELECTOR,
@@ -78,13 +82,13 @@ async fn setup_test(
   // Get the TX to deploy the Router
   let mut tx = Router::deployment_tx(&public_key);
   // Set a gas price (100 gwei)
-  tx.gas_price = 100_000_000_000u128;
+  tx.gas_price = 100_000_000_000;
   // Sign it
   let tx = ethereum_primitives::deterministically_sign(&tx);
   // Publish it
   let receipt = ethereum_test_primitives::publish_tx(&provider, tx).await;
   assert!(receipt.status());
-  println!("Router deployment used {} gas:", receipt.gas_used);
+  assert_eq!(u128::from(Router::DEPLOYMENT_GAS), ((receipt.gas_used + 1000) / 1000) * 1000);
 
   let router = Router::new(provider.clone(), &public_key).await.unwrap().unwrap();
 
@@ -94,7 +98,8 @@ async fn setup_test(
 #[tokio::test]
 async fn test_constructor() {
   let (_anvil, _provider, router, key) = setup_test().await;
-  assert_eq!(router.key(BlockNumberOrTag::Latest.into()).await.unwrap(), key.1);
+  assert_eq!(router.next_key(BlockNumberOrTag::Latest.into()).await.unwrap(), Some(key.1));
+  assert_eq!(router.key(BlockNumberOrTag::Latest.into()).await.unwrap(), None);
   assert_eq!(router.next_nonce(BlockNumberOrTag::Latest.into()).await.unwrap(), 1);
   assert_eq!(
     router.escaped_to(BlockNumberOrTag::Latest.into()).await.unwrap(),
@@ -102,12 +107,54 @@ async fn test_constructor() {
   );
 }
 
+async fn confirm_next_serai_key(
+  provider: &Arc<RootProvider<SimpleRequest>>,
+  router: &Router,
+  nonce: u64,
+  key: (Scalar, PublicKey),
+) -> TransactionReceipt {
+  let msg = Router::confirm_next_serai_key_message(nonce);
+
+  let nonce = Scalar::random(&mut OsRng);
+  let c = Signature::challenge(ProjectivePoint::GENERATOR * nonce, &key.1, &msg);
+  let s = nonce + (c * key.0);
+
+  let sig = Signature::new(c, s).unwrap();
+
+  let mut tx = router.confirm_next_serai_key(&sig);
+  tx.gas_price = 100_000_000_000;
+  let tx = ethereum_primitives::deterministically_sign(&tx);
+  let receipt = ethereum_test_primitives::publish_tx(provider, tx).await;
+  assert!(receipt.status());
+  assert_eq!(
+    u128::from(Router::CONFIRM_NEXT_SERAI_KEY_GAS),
+    ((receipt.gas_used + 1000) / 1000) * 1000
+  );
+  receipt
+}
+
+#[tokio::test]
+async fn test_confirm_next_serai_key() {
+  let (_anvil, provider, router, key) = setup_test().await;
+
+  assert_eq!(router.next_key(BlockNumberOrTag::Latest.into()).await.unwrap(), Some(key.1));
+  assert_eq!(router.key(BlockNumberOrTag::Latest.into()).await.unwrap(), None);
+  assert_eq!(router.next_nonce(BlockNumberOrTag::Latest.into()).await.unwrap(), 1);
+
+  let receipt = confirm_next_serai_key(&provider, &router, 1, key).await;
+
+  assert_eq!(router.next_key(receipt.block_hash.unwrap().into()).await.unwrap(), None);
+  assert_eq!(router.key(receipt.block_hash.unwrap().into()).await.unwrap(), Some(key.1));
+  assert_eq!(router.next_nonce(receipt.block_hash.unwrap().into()).await.unwrap(), 2);
+}
+
 #[tokio::test]
 async fn test_update_serai_key() {
   let (_anvil, provider, router, key) = setup_test().await;
+  confirm_next_serai_key(&provider, &router, 1, key).await;
 
   let update_to = test_key().1;
-  let msg = Router::update_serai_key_message(1, &update_to);
+  let msg = Router::update_serai_key_message(2, &update_to);
 
   let nonce = Scalar::random(&mut OsRng);
   let c = Signature::challenge(ProjectivePoint::GENERATOR * nonce, &key.1, &msg);
@@ -116,19 +163,22 @@ async fn test_update_serai_key() {
   let sig = Signature::new(c, s).unwrap();
 
   let mut tx = router.update_serai_key(&update_to, &sig);
-  tx.gas_price = 100_000_000_000u128;
+  tx.gas_price = 100_000_000_000;
   let tx = ethereum_primitives::deterministically_sign(&tx);
   let receipt = ethereum_test_primitives::publish_tx(&provider, tx).await;
   assert!(receipt.status());
-  println!("update_serai_key used {} gas:", receipt.gas_used);
+  assert_eq!(u128::from(Router::UPDATE_SERAI_KEY_GAS), ((receipt.gas_used + 1000) / 1000) * 1000);
 
-  assert_eq!(router.key(receipt.block_hash.unwrap().into()).await.unwrap(), update_to);
-  assert_eq!(router.next_nonce(receipt.block_hash.unwrap().into()).await.unwrap(), 2);
+  assert_eq!(router.key(receipt.block_hash.unwrap().into()).await.unwrap(), Some(key.1));
+  assert_eq!(router.next_key(receipt.block_hash.unwrap().into()).await.unwrap(), Some(update_to));
+  assert_eq!(router.next_nonce(receipt.block_hash.unwrap().into()).await.unwrap(), 3);
 }
 
 #[tokio::test]
 async fn test_eth_in_instruction() {
-  let (_anvil, provider, router, _key) = setup_test().await;
+  let (_anvil, provider, router, key) = setup_test().await;
+  // TODO: Do we want to allow InInstructions before any key has been confirmed?
+  confirm_next_serai_key(&provider, &router, 1, key).await;
 
   let amount = U256::try_from(OsRng.next_u64()).unwrap();
   let mut in_instruction = vec![0; usize::try_from(OsRng.next_u64() % 256).unwrap()];
@@ -138,8 +188,8 @@ async fn test_eth_in_instruction() {
     chain_id: None,
     nonce: 0,
     // 100 gwei
-    gas_price: 100_000_000_000u128,
-    gas_limit: 1_000_000u128,
+    gas_price: 100_000_000_000,
+    gas_limit: 1_000_000,
     to: TxKind::Call(router.address()),
     value: amount,
     input: crate::abi::inInstructionCall::new((
@@ -200,7 +250,7 @@ async fn publish_outs(
   let sig = Signature::new(c, s).unwrap();
 
   let mut tx = router.execute(coin, fee, outs, &sig);
-  tx.gas_price = 100_000_000_000u128;
+  tx.gas_price = 100_000_000_000;
   let tx = ethereum_primitives::deterministically_sign(&tx);
   ethereum_test_primitives::publish_tx(provider, tx).await
 }
@@ -208,6 +258,7 @@ async fn publish_outs(
 #[tokio::test]
 async fn test_eth_address_out_instruction() {
   let (_anvil, provider, router, key) = setup_test().await;
+  confirm_next_serai_key(&provider, &router, 1, key).await;
 
   let mut amount = U256::try_from(OsRng.next_u64()).unwrap();
   let mut fee = U256::try_from(OsRng.next_u64()).unwrap();
@@ -218,11 +269,11 @@ async fn test_eth_address_out_instruction() {
   ethereum_test_primitives::fund_account(&provider, router.address(), amount).await;
 
   let instructions = OutInstructions::from([].as_slice());
-  let receipt = publish_outs(&provider, &router, key, 1, Coin::Ether, fee, instructions).await;
+  let receipt = publish_outs(&provider, &router, key, 2, Coin::Ether, fee, instructions).await;
   assert!(receipt.status());
-  println!("empty execute used {} gas:", receipt.gas_used);
+  assert_eq!(u128::from(Router::EXECUTE_BASE_GAS), ((receipt.gas_used + 1000) / 1000) * 1000);
 
-  assert_eq!(router.next_nonce(receipt.block_hash.unwrap().into()).await.unwrap(), 2);
+  assert_eq!(router.next_nonce(receipt.block_hash.unwrap().into()).await.unwrap(), 3);
 }
 
 #[tokio::test]

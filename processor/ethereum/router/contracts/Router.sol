@@ -51,6 +51,12 @@ contract Router is IRouterWithoutCollisions {
   uint256 private _nextNonce;
 
   /**
+   * @dev The next public key for Serai's Ethereum validator set, in the form the Schnorr library
+   *   expects
+   */
+  bytes32 private _nextSeraiKey;
+
+  /**
    * @dev The current public key for Serai's Ethereum validator set, in the form the Schnorr library
    *   expects
    */
@@ -59,12 +65,16 @@ contract Router is IRouterWithoutCollisions {
   /// @dev The address escaped to
   address private _escapedTo;
 
-  /// @dev Updates the Serai key. This does not update `_nextNonce`
-  /// @param nonceUpdatedWith The nonce used to update the key
-  /// @param newSeraiKey The key updated to
-  function _updateSeraiKey(uint256 nonceUpdatedWith, bytes32 newSeraiKey) private {
-    _seraiKey = newSeraiKey;
-    emit SeraiKeyUpdated(nonceUpdatedWith, newSeraiKey);
+  /// @dev Set the next Serai key. This does not read from/write to `_nextNonce`
+  /// @param nonceUpdatedWith The nonce used to set the next key
+  /// @param nextSeraiKeyVar The key to set as next
+  function _setNextSeraiKey(uint256 nonceUpdatedWith, bytes32 nextSeraiKeyVar) private {
+    // Explicitly disallow 0 so we can always consider 0 as None and non-zero as Some
+    if (nextSeraiKeyVar == bytes32(0)) {
+      revert InvalidSeraiKey();
+    }
+    _nextSeraiKey = nextSeraiKeyVar;
+    emit NextSeraiKeySet(nonceUpdatedWith, nextSeraiKeyVar);
   }
 
   /// @notice The constructor for the relayer
@@ -74,8 +84,10 @@ contract Router is IRouterWithoutCollisions {
     // This is incompatible with any networks which don't have their nonces start at 0
     _smartContractNonce = 1;
 
-    // Set the Serai key
-    _updateSeraiKey(0, initialSeraiKey);
+    // Set the next Serai key
+    _setNextSeraiKey(0, initialSeraiKey);
+    // Set the current Serai key to None
+    _seraiKey = bytes32(0);
 
     // We just consumed nonce 0 when setting the initial Serai key
     _nextNonce = 1;
@@ -90,13 +102,22 @@ contract Router is IRouterWithoutCollisions {
    *   calldata should be signed with the nonce taking the place of the signature's commitment to
    *   its nonce, and the signature solution zeroed.
    */
-  function verifySignature()
+  function verifySignature(bytes32 key)
     private
     returns (uint256 nonceUsed, bytes memory message, bytes32 messageHash)
   {
     // If the escape hatch was triggered, reject further signatures
     if (_escapedTo != address(0)) {
       revert EscapeHatchInvoked();
+    }
+
+    /*
+      If this key isn't set, reject it.
+
+      The Schnorr contract should already reject this public key yet it's best to be explicit.
+    */
+    if (key == bytes32(0)) {
+      revert InvalidSignature();
     }
 
     message = msg.data;
@@ -134,7 +155,7 @@ contract Router is IRouterWithoutCollisions {
     }
 
     // Verify the signature
-    if (!Schnorr.verify(_seraiKey, messageHash, signatureC, signatureS)) {
+    if (!Schnorr.verify(key, messageHash, signatureC, signatureS)) {
       revert InvalidSignature();
     }
 
@@ -178,22 +199,38 @@ contract Router is IRouterWithoutCollisions {
     }
   }
 
-  /// @notice Update the key representing Serai's Ethereum validators
+  /// @notice Start updating the key representing Serai's Ethereum validators
   /**
-   * @dev This assumes the key is correct. No checks on it are performed.
+   * @dev This does not validate the passed-in key as much as possible. This is accepted as the key
+   *   won't actually be rotated to until it provides a signature confirming the update however
+   *   (proving signatures can be made by the key in question and verified via our Schnorr
+   *   contract).
    *
    *  The hex bytes are to cause a collision with `IRouter.updateSeraiKey`.
    */
   // @param signature The signature by the current key authorizing this update
-  // @param newSeraiKey The key to update to
+  // @param nextSeraiKey The key to update to
   function updateSeraiKey5A8542A2() external {
-    (uint256 nonceUsed, bytes memory args,) = verifySignature();
+    (uint256 nonceUsed, bytes memory args,) = verifySignature(_seraiKey);
     /*
       We could replace this with a length check (if we don't simply assume the calldata is valid as
       it was properly signed) + mload to save 24 gas but it's not worth the complexity.
     */
-    (,, bytes32 newSeraiKey) = abi.decode(args, (bytes32, bytes32, bytes32));
-    _updateSeraiKey(nonceUsed, newSeraiKey);
+    (,, bytes32 nextSeraiKeyVar) = abi.decode(args, (bytes32, bytes32, bytes32));
+    _setNextSeraiKey(nonceUsed, nextSeraiKeyVar);
+  }
+
+  /// @notice Confirm the next key representing Serai's Ethereum validators, updating to it
+  /// @dev The hex bytes are to cause a collision with `IRouter.confirmSeraiKey`.
+  // @param signature The signature by the next key confirming its validity
+  function confirmNextSeraiKey34AC53AC() external {
+    // Checks
+    bytes32 nextSeraiKeyVar = _nextSeraiKey;
+    (uint256 nonceUsed,,) = verifySignature(nextSeraiKeyVar);
+    // Effects
+    _nextSeraiKey = bytes32(0);
+    _seraiKey = nextSeraiKeyVar;
+    emit SeraiKeyUpdated(nonceUsed, nextSeraiKeyVar);
   }
 
   /// @notice Transfer coins into Serai with an instruction
@@ -384,7 +421,7 @@ contract Router is IRouterWithoutCollisions {
       revert ReenteredExecute();
     }
 
-    (uint256 nonceUsed, bytes memory args, bytes32 message) = verifySignature();
+    (uint256 nonceUsed, bytes memory args, bytes32 message) = verifySignature(_seraiKey);
     (,, address coin, uint256 fee, IRouter.OutInstruction[] memory outs) =
       abi.decode(args, (bytes32, bytes32, address, uint256, IRouter.OutInstruction[]));
 
@@ -481,7 +518,7 @@ contract Router is IRouterWithoutCollisions {
   // @param escapeTo The address to escape to
   function escapeHatchDCDD91CC() external {
     // Verify the signature
-    (, bytes memory args,) = verifySignature();
+    (, bytes memory args,) = verifySignature(_seraiKey);
 
     (,, address escapeTo) = abi.decode(args, (bytes32, bytes32, address));
 
@@ -526,8 +563,17 @@ contract Router is IRouterWithoutCollisions {
     return _nextNonce;
   }
 
+  /// @notice Fetch the next key for Serai's Ethereum validator set
+  /// @return The next key for Serai's Ethereum validator set or bytes32(0) if none is currently set
+  function nextSeraiKey() external view returns (bytes32) {
+    return _nextSeraiKey;
+  }
+
   /// @notice Fetch the current key for Serai's Ethereum validator set
-  /// @return The current key for Serai's Ethereum validator set
+  /**
+   * @return The current key for Serai's Ethereum validator set or bytes32(0) if none is currently
+   * set
+   */
   function seraiKey() external view returns (bytes32) {
     return _seraiKey;
   }

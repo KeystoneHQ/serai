@@ -5,7 +5,7 @@
 use group::ff::PrimeField;
 use k256::Scalar;
 
-use alloy_core::primitives::{Parity, Signature};
+use alloy_core::primitives::PrimitiveSignature;
 use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
 
 /// The Keccak256 hash function.
@@ -34,8 +34,8 @@ pub fn deterministically_sign(tx: &TxLegacy) -> Signed<TxLegacy> {
     // Create the signature
     let r_bytes: [u8; 32] = r.to_repr().into();
     let s_bytes: [u8; 32] = s.to_repr().into();
-    let v = Parity::NonEip155(false);
-    let signature = Signature::from_scalars_and_parity(r_bytes.into(), s_bytes.into(), v).unwrap();
+    let signature =
+      PrimitiveSignature::from_scalars_and_parity(r_bytes.into(), s_bytes.into(), false);
 
     // Check if this is a valid signature
     let tx = tx.clone().into_signed(signature);

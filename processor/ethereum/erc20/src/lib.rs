@@ -8,7 +8,7 @@ use alloy_core::primitives::{Address, B256, U256};
 
 use alloy_sol_types::{SolInterface, SolEvent};
 
-use alloy_rpc_types_eth::Filter;
+use alloy_rpc_types_eth::{Filter, TransactionTrait};
 use alloy_transport::{TransportErrorKind, RpcError};
 use alloy_simple_request_transport::SimpleRequest;
 use alloy_provider::{Provider, RootProvider};
@@ -66,7 +66,7 @@ impl Erc20 {
     // If this is a top-level call...
     // Don't validate the encoding as this can't be re-encoded to an identical bytestring due
     // to the `InInstruction` appended after the call itself
-    if let Ok(call) = IERC20Calls::abi_decode(&transaction.input, false) {
+    if let Ok(call) = IERC20Calls::abi_decode(transaction.inner.input(), false) {
       // Extract the top-level call's from/to/value
       let (from, call_to, value) = match call {
         IERC20Calls::transfer(transferCall { to, value }) => (transaction.from, to, value),
@@ -92,7 +92,7 @@ impl Erc20 {
       // Find the log for this transfer
       for log in receipt.inner.logs() {
         // If this log was emitted by a different contract, continue
-        if Some(log.address()) != transaction.to {
+        if Some(log.address()) != transaction.inner.to() {
           continue;
         }
 
@@ -122,7 +122,7 @@ impl Erc20 {
 
         // Read the data appended after
         let encoded = call.abi_encode();
-        let data = transaction.input.as_ref()[encoded.len() ..].to_vec();
+        let data = transaction.inner.input().as_ref()[encoded.len() ..].to_vec();
 
         return Ok(Some(TopLevelTransfer {
           id: (*transaction_id, log_index),

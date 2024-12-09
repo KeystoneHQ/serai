@@ -5,6 +5,11 @@ pragma solidity ^0.8.26;
 /// @author Luke Parker <lukeparker@serai.exchange>
 /// @notice Intakes coins for the Serai network and handles relaying batches of transfers out
 interface IRouterWithoutCollisions {
+  /// @notice Emitted when the next key for Serai's Ethereum validators is set
+  /// @param nonce The nonce consumed to update this key
+  /// @param key The key updated to
+  event NextSeraiKeySet(uint256 indexed nonce, bytes32 indexed key);
+
   /// @notice Emitted when the key for Serai's Ethereum validators is updated
   /// @param nonce The nonce consumed to update this key
   /// @param key The key updated to
@@ -39,6 +44,9 @@ interface IRouterWithoutCollisions {
   /// @param coin The coin which escaped
   event Escaped(address indexed coin);
 
+  /// @notice The key for Serai was invalid
+  /// @dev This is incomplete and not always guaranteed to be thrown upon an invalid key
+  error InvalidSeraiKey();
   /// @notice The contract has had its escape hatch invoked and won't accept further actions
   error EscapeHatchInvoked();
   /// @notice The signature was invalid
@@ -86,8 +94,15 @@ interface IRouterWithoutCollisions {
   /// return The next nonce to use by an action published to this contract
   function nextNonce() external view returns (uint256);
 
+  /// @notice Fetch the next key for Serai's Ethereum validator set
+  /// @return The next key for Serai's Ethereum validator set or bytes32(0) if none is currently set
+  function nextSeraiKey() external view returns (bytes32);
+
   /// @notice Fetch the current key for Serai's Ethereum validator set
-  /// @return The current key for Serai's Ethereum validator set
+  /**
+   * @return The current key for Serai's Ethereum validator set or bytes32(0) if none is currently
+   * set
+   */
   function seraiKey() external view returns (bytes32);
 
   /// @notice Fetch the address escaped to
@@ -134,15 +149,25 @@ interface IRouter is IRouterWithoutCollisions {
   }
 
   /// @notice Update the key representing Serai's Ethereum validators
-  /// @dev This assumes the key is correct. No checks on it are performed
+  /**
+   * @dev This does not validate the passed-in key as much as possible. This is accepted as the key
+   *   won't actually be rotated to until it provides a signature confirming the update however
+   *   (proving signatures can be made by the key in question and verified via our Schnorr
+   *   contract).
+   */
+  // @param signature The signature by the current key authorizing this update
   /// @param signature The signature by the current key authorizing this update
-  /// @param newSeraiKey The key to update to
-  function updateSeraiKey(Signature calldata signature, bytes32 newSeraiKey) external;
+  /// @param nextSeraiKeyVar The key to update to, once it confirms the update
+  function updateSeraiKey(Signature calldata signature, bytes32 nextSeraiKeyVar) external;
+
+  /// @notice Confirm the next key representing Serai's Ethereum validators, updating to it
+  /// @param signature The signature by the next key confirming its validity
+  function confirmNextSeraiKey(Signature calldata signature) external;
 
   /// @notice Execute a batch of `OutInstruction`s
   /**
    * @dev All `OutInstruction`s in a batch are only for a single coin to simplify handling of the
-   *  fee
+   *   fee
    */
   /// @param signature The signature by the current key for Serai's Ethereum validators
   /// @param coin The coin all of these `OutInstruction`s are for

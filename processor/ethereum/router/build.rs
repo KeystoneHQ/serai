@@ -26,6 +26,13 @@ fn main() {
     fs::create_dir(&artifacts_path).unwrap();
   }
 
+  build_solidity_contracts::build(
+    &["../../../networks/ethereum/schnorr/contracts", "../erc20/contracts", "contracts"],
+    "contracts",
+    &artifacts_path,
+  )
+  .unwrap();
+
   // This cannot be handled with the sol! macro. The Router requires an import
   // https://github.com/alloy-rs/core/issues/602
   sol(

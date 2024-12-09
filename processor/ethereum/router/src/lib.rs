@@ -275,6 +275,11 @@ impl Executed {
 #[derive(Clone, Debug)]
 pub struct Router(Arc<RootProvider<SimpleRequest>>, Address);
 impl Router {
+  const DEPLOYMENT_GAS: u64 = 995_000;
+  const CONFIRM_NEXT_SERAI_KEY_GAS: u64 = 58_000;
+  const UPDATE_SERAI_KEY_GAS: u64 = 61_000;
+  const EXECUTE_BASE_GAS: u64 = 48_000;
+
   fn code() -> Vec<u8> {
     const BYTECODE: &[u8] =
       include_bytes!(concat!(env!("OUT_DIR"), "/serai-processor-ethereum-router/Router.bin"));
@@ -293,7 +298,7 @@ impl Router {
   /// This transaction assumes the `Deployer` has already been deployed.
   pub fn deployment_tx(initial_serai_key: &PublicKey) -> TxLegacy {
     let mut tx = Deployer::deploy_tx(Self::init_code(initial_serai_key));
-    tx.gas_limit = 883654 * 120 / 100;
+    tx.gas_limit = Self::DEPLOYMENT_GAS * 120 / 100;
     tx
   }
 
@@ -322,6 +327,25 @@ impl Router {
     self.1
   }
 
+  /// Get the message to be signed in order to confirm the next key for Serai.
+  pub fn confirm_next_serai_key_message(nonce: u64) -> Vec<u8> {
+    abi::confirmNextSeraiKeyCall::new((abi::Signature {
+      c: U256::try_from(nonce).unwrap().into(),
+      s: U256::ZERO.into(),
+    },))
+    .abi_encode()
+  }
+
+  /// Construct a transaction to confirm the next key representing Serai.
+  pub fn confirm_next_serai_key(&self, sig: &Signature) -> TxLegacy {
+    TxLegacy {
+      to: TxKind::Call(self.1),
+      input: abi::confirmNextSeraiKeyCall::new((abi::Signature::from(sig),)).abi_encode().into(),
+      gas_limit: Self::CONFIRM_NEXT_SERAI_KEY_GAS * 120 / 100,
+      ..Default::default()
+    }
+  }
+
   /// Get the message to be signed in order to update the key for Serai.
   pub fn update_serai_key_message(nonce: u64, key: &PublicKey) -> Vec<u8> {
     abi::updateSeraiKeyCall::new((
@@ -341,7 +365,7 @@ impl Router {
       ))
       .abi_encode()
       .into(),
-      gas_limit: 40_889 * 120 / 100,
+      gas_limit: Self::UPDATE_SERAI_KEY_GAS * 120 / 100,
       ..Default::default()
     }
   }
@@ -359,14 +383,14 @@ impl Router {
 
   /// Construct a transaction to execute a batch of `OutInstruction`s.
   pub fn execute(&self, coin: Coin, fee: U256, outs: OutInstructions, sig: &Signature) -> TxLegacy {
-    let outs_len = outs.0.len();
+    // TODO
+    let gas_limit = Self::EXECUTE_BASE_GAS + outs.0.iter().map(|_| 200_000 + 10_000).sum::<u64>();
     TxLegacy {
       to: TxKind::Call(self.1),
       input: abi::executeCall::new((abi::Signature::from(sig), coin.address(), fee, outs.0))
         .abi_encode()
         .into(),
-      // TODO
-      gas_limit: (45_501 + ((200_000 + 10_000) * u128::try_from(outs_len).unwrap())) * 120 / 100,
+      gas_limit: gas_limit * 120 / 100,
       ..Default::default()
     }
   }
@@ -536,7 +560,7 @@ impl Router {
 
         res.push(Executed::SetKey {
           nonce: log.nonce.try_into().map_err(|e| {
-            TransportErrorKind::Custom(format!("filtered to convert nonce to u64: {e:?}").into())
+            TransportErrorKind::Custom(format!("failed to convert nonce to u64: {e:?}").into())
           })?,
           key: log.key.into(),
         });
@@ -568,7 +592,7 @@ impl Router {
 
         res.push(Executed::Batch {
           nonce: log.nonce.try_into().map_err(|e| {
-            TransportErrorKind::Custom(format!("filtered to convert nonce to u64: {e:?}").into())
+            TransportErrorKind::Custom(format!("failed to convert nonce to u64: {e:?}").into())
           })?,
           message_hash: log.messageHash.into(),
         });
@@ -580,19 +604,40 @@ impl Router {
     Ok(res)
   }
 
-  /// Fetch the current key for Serai's Ethereum validators
-  pub async fn key(&self, block: BlockId) -> Result<PublicKey, RpcError<TransportErrorKind>> {
-    let call = TransactionRequest::default()
-      .to(self.1)
-      .input(TransactionInput::new(abi::seraiKeyCall::new(()).abi_encode().into()));
+  async fn fetch_key(
+    &self,
+    block: BlockId,
+    call: Vec<u8>,
+  ) -> Result<Option<PublicKey>, RpcError<TransportErrorKind>> {
+    let call = TransactionRequest::default().to(self.1).input(TransactionInput::new(call.into()));
     let bytes = self.0.call(&call).block(block).await?;
-    let res = abi::seraiKeyCall::abi_decode_returns(&bytes, true)
-      .map_err(|e| TransportErrorKind::Custom(format!("filtered to decode key: {e:?}").into()))?;
-    Ok(
-      PublicKey::from_eth_repr(res._0.into()).ok_or_else(|| {
+    // This is fine as both key calls share a return type
+    let res = abi::nextSeraiKeyCall::abi_decode_returns(&bytes, true)
+      .map_err(|e| TransportErrorKind::Custom(format!("failed to decode key: {e:?}").into()))?;
+    let eth_repr = <[u8; 32]>::from(res._0);
+    Ok(if eth_repr == [0; 32] {
+      None
+    } else {
+      Some(PublicKey::from_eth_repr(eth_repr).ok_or_else(|| {
         TransportErrorKind::Custom("invalid key set on router".to_string().into())
-      })?,
-    )
+      })?)
+    })
+  }
+
+  /// Fetch the next key for Serai's Ethereum validators
+  pub async fn next_key(
+    &self,
+    block: BlockId,
+  ) -> Result<Option<PublicKey>, RpcError<TransportErrorKind>> {
+    self.fetch_key(block, abi::nextSeraiKeyCall::new(()).abi_encode()).await
+  }
+
+  /// Fetch the current key for Serai's Ethereum validators
+  pub async fn key(
+    &self,
+    block: BlockId,
+  ) -> Result<Option<PublicKey>, RpcError<TransportErrorKind>> {
+    self.fetch_key(block, abi::seraiKeyCall::new(()).abi_encode()).await
   }
 
   /// Fetch the nonce of the next action to execute
@@ -602,7 +647,7 @@ impl Router {
       .input(TransactionInput::new(abi::nextNonceCall::new(()).abi_encode().into()));
     let bytes = self.0.call(&call).block(block).await?;
     let res = abi::nextNonceCall::abi_decode_returns(&bytes, true)
-      .map_err(|e| TransportErrorKind::Custom(format!("filtered to decode nonce: {e:?}").into()))?;
+      .map_err(|e| TransportErrorKind::Custom(format!("failed to decode nonce: {e:?}").into()))?;
     Ok(u64::try_from(res._0).map_err(|_| {
       TransportErrorKind::Custom("nonce returned exceeded 2**64".to_string().into())
     })?)
@@ -615,7 +660,7 @@ impl Router {
       .input(TransactionInput::new(abi::escapedToCall::new(()).abi_encode().into()));
     let bytes = self.0.call(&call).block(block).await?;
     let res = abi::escapedToCall::abi_decode_returns(&bytes, true).map_err(|e| {
-      TransportErrorKind::Custom(format!("filtered to decode the address escaped to: {e:?}").into())
+      TransportErrorKind::Custom(format!("failed to decode the address escaped to: {e:?}").into())
     })?;
     Ok(res._0)
   }
