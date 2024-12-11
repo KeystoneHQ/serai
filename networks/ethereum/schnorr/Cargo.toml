@@ -33,10 +33,10 @@ alloy-core = { version = "0.8", default-features = false }
 alloy-sol-types = { version = "0.8", default-features = false }
 
 alloy-simple-request-transport = { path = "../../../networks/ethereum/alloy-simple-request-transport", default-features = false }
-alloy-rpc-types-eth = { version = "0.7", default-features = false }
-alloy-rpc-client = { version = "0.7", default-features = false }
-alloy-provider = { version = "0.7", default-features = false }
+alloy-rpc-types-eth = { version = "0.8", default-features = false }
+alloy-rpc-client = { version = "0.8", default-features = false }
+alloy-provider = { version = "0.8", default-features = false }
 
-alloy-node-bindings = { version = "0.7", default-features = false }
+alloy-node-bindings = { version = "0.8", default-features = false }
 
 tokio = { version = "1", default-features = false, features = ["macros"] }
