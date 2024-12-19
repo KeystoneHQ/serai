@@ -24,6 +24,7 @@ jobs:
           cargo msrv verify --manifest-path common/std-shims/Cargo.toml
           cargo msrv verify --manifest-path common/env/Cargo.toml
           cargo msrv verify --manifest-path common/db/Cargo.toml
+          cargo msrv verify --manifest-path common/task/Cargo.toml
           cargo msrv verify --manifest-path common/request/Cargo.toml
           cargo msrv verify --manifest-path common/patchable-async-sleep/Cargo.toml
 

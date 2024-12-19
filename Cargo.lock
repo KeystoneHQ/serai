@@ -8922,6 +8922,7 @@ dependencies = [
  "parity-scale-codec",
  "serai-coins-primitives",
  "serai-primitives",
+ "serai-task",
  "tokio",
 ]
 
@@ -9148,6 +9149,14 @@ dependencies = [
  "serai-primitives",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "serai-task"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "tokio",
 ]
 
 [[package]]

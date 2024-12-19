@@ -28,3 +28,5 @@ borsh = { version = "1", default-features = false, features = ["std", "derive", 
 
 log = { version = "0.4", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "time"] }
+
+serai-task = { path = "../../common/task", default-features = false }

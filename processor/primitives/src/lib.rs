@@ -10,7 +10,7 @@ use scale::{Encode, Decode};
 use borsh::{BorshSerialize, BorshDeserialize};
 
 /// A module for task-related structs and functionality.
-pub mod task;
+pub use serai_task as task;
 
 mod output;
 pub use output::*;

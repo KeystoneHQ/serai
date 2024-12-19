@@ -41,6 +41,7 @@ allow = [
 
 exceptions = [
   { allow = ["AGPL-3.0"], name = "serai-env" },
+  { allow = ["AGPL-3.0"], name = "serai-task" },
 
   { allow = ["AGPL-3.0"], name = "ethereum-schnorr-contract" },
   { allow = ["AGPL-3.0"], name = "serai-ethereum-relayer" },

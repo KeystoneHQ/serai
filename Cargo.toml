@@ -20,6 +20,7 @@ members = [
   "common/patchable-async-sleep",
   "common/db",
   "common/env",
+  "common/task",
   "common/request",
 
   "crypto/transcript",
