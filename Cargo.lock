@@ -8366,6 +8366,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "serai-cosign"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "borsh",
+ "ciphersuite",
+ "log",
+ "parity-scale-codec",
+ "schnorr-signatures",
+ "serai-client",
+ "serai-db",
+ "serai-task",
+ "sp-application-crypto",
+ "tokio",
+]
+
+[[package]]
 name = "serai-db"
 version = "0.1.0"
 dependencies = [

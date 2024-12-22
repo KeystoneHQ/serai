@@ -175,6 +175,7 @@ jobs:
         run: |
           cargo msrv verify --manifest-path coordinator/tributary/tendermint/Cargo.toml
           cargo msrv verify --manifest-path coordinator/tributary/Cargo.toml
+          cargo msrv verify --manifest-path coordinator/cosign/Cargo.toml
           cargo msrv verify --manifest-path coordinator/Cargo.toml
 
   msrv-substrate:

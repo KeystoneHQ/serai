@@ -98,6 +98,7 @@ members = [
 
   "coordinator/tributary/tendermint",
   "coordinator/tributary",
+  "coordinator/cosign",
   "coordinator",
 
   "substrate/primitives",
@@ -208,6 +209,7 @@ pasta_curves = { git = "https://github.com/kayabaNerve/pasta_curves", rev = "a46
 
 [workspace.lints.clippy]
 unwrap_or_default = "allow"
+map_unwrap_or = "allow"
 borrow_as_ptr = "deny"
 cast_lossless = "deny"
 cast_possible_truncation = "deny"
@@ -235,7 +237,6 @@ manual_instant_elapsed = "deny"
 manual_let_else = "deny"
 manual_ok_or = "deny"
 manual_string_new = "deny"
-map_unwrap_or = "deny"
 match_bool = "deny"
 match_same_arms = "deny"
 missing_fields_in_debug = "deny"

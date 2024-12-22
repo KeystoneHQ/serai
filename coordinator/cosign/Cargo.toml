@@ -1,0 +1,36 @@
+[package]
+name = "serai-cosign"
+version = "0.1.0"
+description = "Evaluator of cosigns for the Serai network"
+license = "AGPL-3.0-only"
+repository = "https://github.com/serai-dex/serai/tree/develop/coordinator/cosign"
+authors = ["Luke Parker <lukeparker5132@gmail.com>"]
+keywords = []
+edition = "2021"
+publish = false
+rust-version = "1.81"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["std", "derive"] }
+borsh = { version = "1", default-features = false, features = ["std", "derive", "de_strict_order"] }
+
+blake2 = { version = "0.10", default-features = false, features = ["std"] }
+ciphersuite = { path = "../../crypto/ciphersuite", default-features = false, features = ["std"] }
+schnorr = { package = "schnorr-signatures", path = "../../crypto/schnorr", default-features = false, features = ["std"] }
+
+sp-application-crypto = { git = "https://github.com/serai-dex/substrate", default-features = false, features = ["std"] }
+serai-client = { path = "../../substrate/client", default-features = false, features = ["serai", "borsh"] }
+
+log = { version = "0.4", default-features = false, features = ["std"] }
+
+tokio = { version = "1", default-features = false, features = [] }
+
+serai-db = { path = "../../common/db" }
+serai-task = { path = "../../common/task" }

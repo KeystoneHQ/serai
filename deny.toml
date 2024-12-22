@@ -73,6 +73,7 @@ exceptions = [
   { allow = ["AGPL-3.0"], name = "serai-monero-processor" },
 
   { allow = ["AGPL-3.0"], name = "tributary-chain" },
+  { allow = ["AGPL-3.0"], name = "serai-cosign" },
   { allow = ["AGPL-3.0"], name = "serai-coordinator" },
 
   { allow = ["AGPL-3.0"], name = "serai-coins-pallet" },
