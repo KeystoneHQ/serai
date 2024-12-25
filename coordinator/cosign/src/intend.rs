@@ -13,34 +13,40 @@ create_db!(
   }
 );
 
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
+pub(crate) struct BlockEventData {
+  pub(crate) block_number: u64,
+  pub(crate) parent_hash: [u8; 32],
+  pub(crate) block_hash: [u8; 32],
+  pub(crate) has_events: HasEvents,
+}
+
 db_channel! {
   CosignIntendChannels {
-    BlockHasEvents: () -> (u64, HasEvents),
+    BlockEvents: () -> BlockEventData,
     IntendedCosigns: (set: ValidatorSet) -> CosignIntent,
   }
 }
 
 async fn block_has_events_justifying_a_cosign(
   serai: &Serai,
-  block: u64,
-) -> Result<HasEvents, SeraiError> {
-  let serai = serai.as_of(
-    serai
-      .finalized_block_by_number(block)
-      .await?
-      .expect("couldn't get block which should've been finalized")
-      .hash(),
-  );
+  block_number: u64,
+) -> Result<(Block, HasEvents), SeraiError> {
+  let block = serai
+    .finalized_block_by_number(block_number)
+    .await?
+    .expect("couldn't get block which should've been finalized");
+  let serai = serai.as_of(block.hash());
 
   if !serai.validator_sets().key_gen_events().await?.is_empty() {
-    return Ok(HasEvents::Notable);
+    return Ok((block, HasEvents::Notable));
   }
 
   if !serai.coins().burn_with_instruction_events().await?.is_empty() {
-    return Ok(HasEvents::NonNotable);
+    return Ok((block, HasEvents::NonNotable));
   }
 
-  Ok(HasEvents::No)
+  Ok((block, HasEvents::No))
 }
 
 /// A task to determine which blocks we should intend to cosign.
@@ -59,23 +65,22 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
       for block_number in start_block_number ..= latest_block_number {
         let mut txn = self.db.txn();
 
-        let mut has_events = block_has_events_justifying_a_cosign(&self.serai, block_number)
-          .await
-          .map_err(|e| format!("{e:?}"))?;
+        let (block, mut has_events) =
+          block_has_events_justifying_a_cosign(&self.serai, block_number)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
 
         match has_events {
           HasEvents::Notable | HasEvents::NonNotable => {
-            let (block, sets) = cosigning_sets_for_block(&self.serai, block_number).await?;
+            let sets = cosigning_sets_for_block(&self.serai, &block).await?;
 
             // If this is notable, it creates a new global session, which we index into the
             // database now
             if has_events == HasEvents::Notable {
               let sets = cosigning_sets(&self.serai.as_of(block.hash())).await?;
-              GlobalSessions::set(
-                &mut txn,
-                GlobalSession::new(sets).id(),
-                &(block.number(), block.hash()),
-              );
+              let global_session = GlobalSession::new(sets).id();
+              GlobalSessions::set(&mut txn, global_session, &(block.number(), block.hash()));
+              LatestGlobalSessionIntended::set(&mut txn, &global_session);
             }
 
             // If this block doesn't have any cosigners, meaning it'll never be cosigned, we flag it
@@ -104,7 +109,15 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
           HasEvents::No => {}
         }
         // Populate a singular feed with every block's status for the evluator to work off of
-        BlockHasEvents::send(&mut txn, &(block_number, has_events));
+        BlockEvents::send(
+          &mut txn,
+          &(BlockEventData {
+            block_number,
+            parent_hash: block.header.parent_hash.into(),
+            block_hash: block.hash(),
+            has_events,
+          }),
+        );
         // Mark this block as handled, meaning we should scan from the next block moving on
         ScanCosignFrom::set(&mut txn, &(block_number + 1));
         txn.commit();

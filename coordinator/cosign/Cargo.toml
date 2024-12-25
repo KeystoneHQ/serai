@@ -14,6 +14,9 @@ rust-version = "1.81"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[package.metadata.cargo-machete]
+ignored = ["scale"]
+
 [lints]
 workspace = true
 
@@ -21,6 +24,7 @@ workspace = true
 blake2 = { version = "0.10", default-features = false, features = ["std"] }
 schnorrkel = { version = "0.11", default-features = false, features = ["std"] }
 
+scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["std", "derive"] }
 borsh = { version = "1", default-features = false, features = ["std", "derive", "de_strict_order"] }
 serai-client = { path = "../../substrate/client", default-features = false, features = ["serai", "borsh"] }
 

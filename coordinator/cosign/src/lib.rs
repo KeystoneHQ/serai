@@ -62,16 +62,20 @@ create_db! {
   Cosign {
     // A mapping from a global session's ID to its start block (number, hash).
     GlobalSessions: (global_session: [u8; 32]) -> (u64, [u8; 32]),
-    // An archive of all cosigns ever received.
+    // The latest global session intended.
     //
-    // This will only be populated with cosigns predating or during the most recent global session
-    // to have its start cosigned.
-    Cosigns: (block_number: u64) -> Vec<SignedCosign>,
+    // This is distinct from the latest global session for which we've evaluated the cosigns for.
+    LatestGlobalSessionIntended: () -> [u8; 32],
     // The latest cosigned block for each network.
     //
     // This will only be populated with cosigns predating or during the most recent global session
     // to have its start cosigned.
-    NetworksLatestCosignedBlock: (network: NetworkId) -> SignedCosign,
+    //
+    // The global session changes upon a notable block, causing each global session to have exactly
+    // one notable block. All validator sets will explicitly produce a cosign for their notable
+    // block, causing the latest cosigned block for a global session to either be the global
+    // session's notable cosigns or the network's latest cosigns.
+    NetworksLatestCosignedBlock: (global_session: [u8; 32], network: NetworkId) -> SignedCosign,
     // Cosigns received for blocks not locally recognized as finalized.
     Faults: (global_session: [u8; 32]) -> Vec<SignedCosign>,
     // The global session which faulted.
@@ -146,25 +150,6 @@ impl SignedCosign {
   }
 }
 
-/// Construct a `TemporalSerai` bound to the time used for cosigning this block.
-async fn temporal_serai_used_for_cosigning(
-  serai: &Serai,
-  block_number: u64,
-) -> Result<(Block, TemporalSerai<'_>), String> {
-  let block = serai
-    .finalized_block_by_number(block_number)
-    .await
-    .map_err(|e| format!("{e:?}"))?
-    .ok_or("block wasn't finalized".to_string())?;
-
-  // If we're cosigning block `n`, it's cosigned by the sets as of block `n-1`
-  // (as block `n` may update the sets declared but that update shouldn't take effect here
-  // until it's cosigned)
-  let serai = serai.as_of(block.header.parent_hash.into());
-
-  Ok((block, serai))
-}
-
 /// Fetch the keys used for cosigning by a specific network.
 async fn keys_for_network(
   serai: &TemporalSerai<'_>,
@@ -216,13 +201,25 @@ async fn cosigning_sets(serai: &TemporalSerai<'_>) -> Result<Vec<ValidatorSet>, 
   Ok(sets)
 }
 
+/// Fetch the `ValidatorSet`s used for cosigning a block by the block's parent hash.
+async fn cosigning_sets_by_parent_hash(
+  serai: &Serai,
+  parent_hash: [u8; 32],
+) -> Result<Vec<ValidatorSet>, String> {
+  /*
+    If we're cosigning block `n`, it's cosigned by the sets as of block `n-1` (as block `n` may
+    update the sets declared but that update shouldn't take effect until block `n` is cosigned).
+    That's why fetching the cosigning sets for a block by its parent hash is valid.
+  */
+  cosigning_sets(&serai.as_of(parent_hash)).await
+}
+
 /// Fetch the `ValidatorSet`s used for cosigning this block.
 async fn cosigning_sets_for_block(
   serai: &Serai,
-  block_number: u64,
-) -> Result<(Block, Vec<ValidatorSet>), String> {
-  let (block, serai) = temporal_serai_used_for_cosigning(serai, block_number).await?;
-  cosigning_sets(&serai).await.map(|sets| (block, sets))
+  block: &Block,
+) -> Result<Vec<ValidatorSet>, String> {
+  cosigning_sets_by_parent_hash(serai, block.header.parent_hash.into()).await
 }
 
 /// An object usable to request notable cosigns for a block.
@@ -279,8 +276,17 @@ impl<D: Db> Cosigning<D> {
   }
 
   /// Fetch the notable cosigns for a global session in order to respond to requests.
+  ///
+  /// If this global session hasn't produced any notable cosigns, this will return the latest
+  /// cosigns for this session.
   pub fn notable_cosigns(&self, global_session: [u8; 32]) -> Vec<SignedCosign> {
-    todo!("TODO")
+    let mut cosigns = Vec::with_capacity(serai_client::primitives::NETWORKS.len());
+    for network in serai_client::primitives::NETWORKS {
+      if let Some(cosign) = NetworksLatestCosignedBlock::get(&self.db, global_session, network) {
+        cosigns.push(cosign);
+      }
+    }
+    cosigns
   }
 
   /// The cosigns to rebroadcast ever so often.
@@ -293,7 +299,7 @@ impl<D: Db> Cosigning<D> {
       // Also include all of our recognized-as-honest cosigns in an attempt to induce fault
       // identification in those who see the faulty cosigns as honest
       for network in serai_client::primitives::NETWORKS {
-        if let Some(cosign) = NetworksLatestCosignedBlock::get(&self.db, network) {
+        if let Some(cosign) = NetworksLatestCosignedBlock::get(&self.db, faulted, network) {
           if cosign.cosign.global_session == faulted {
             cosigns.push(cosign);
           }
@@ -301,9 +307,14 @@ impl<D: Db> Cosigning<D> {
       }
       cosigns
     } else {
+      let Some(latest_global_session) = LatestGlobalSessionIntended::get(&self.db) else {
+        return vec![];
+      };
       let mut cosigns = Vec::with_capacity(serai_client::primitives::NETWORKS.len());
       for network in serai_client::primitives::NETWORKS {
-        if let Some(cosign) = NetworksLatestCosignedBlock::get(&self.db, network) {
+        if let Some(cosign) =
+          NetworksLatestCosignedBlock::get(&self.db, latest_global_session, network)
+        {
           cosigns.push(cosign);
         }
       }
@@ -324,15 +335,24 @@ impl<D: Db> Cosigning<D> {
   // more relevant, cosign) again.
   //
   // Takes `&mut self` as this should only be called once at any given moment.
+  // TODO: Don't overload bool here
   pub async fn intake_cosign(&mut self, signed_cosign: SignedCosign) -> Result<bool, String> {
     let cosign = &signed_cosign.cosign;
 
-    // Check if we've prior handled this cosign
+    let Cosigner::ValidatorSet(network) = cosign.cosigner else {
+      // TODO
+      // Individually signed cosign despite that protocol not being implemented
+      return Ok(false);
+    };
+
+    // Check if we should even bother handling this cosign
     let mut txn = self.db.txn();
-    let mut cosigns_for_this_block_position =
-      Cosigns::get(&txn, cosign.block_number).unwrap_or(vec![]);
-    if cosigns_for_this_block_position.iter().any(|existing| existing.cosign == *cosign) {
-      return Ok(true);
+    // TODO: A malicious validator set can sign a block after their notable block to erase a
+    // notable cosign
+    if let Some(existing) = NetworksLatestCosignedBlock::get(&txn, cosign.global_session, network) {
+      if existing.cosign.block_number >= cosign.block_number {
+        return Ok(true);
+      }
     }
 
     // Check we can verify this cosign's signature
@@ -342,24 +362,31 @@ impl<D: Db> Cosigning<D> {
       // Unrecognized global session
       return Ok(true);
     };
+    if cosign.block_number <= global_session_start_block_number {
+      // Cosign is for a block predating the global session
+      return Ok(false);
+    }
 
     // Check the cosign's signature
-    let network = match cosign.cosigner {
-      Cosigner::ValidatorSet(network) => {
-        let Some((_session, keys)) =
-          keys_for_network(&self.serai.as_of(global_session_start_block_hash), network).await?
-        else {
-          return Ok(false);
-        };
+    {
+      let key = match cosign.cosigner {
+        Cosigner::ValidatorSet(network) => {
+          // TODO: Cache this
+          let Some((_session, keys)) =
+            keys_for_network(&self.serai.as_of(global_session_start_block_hash), network).await?
+          else {
+            return Ok(false);
+          };
 
-        if !signed_cosign.verify_signature(keys.0) {
-          return Ok(false);
+          keys.0
         }
+        Cosigner::Validator(signer) => signer.into(),
+      };
 
-        network
+      if !signed_cosign.verify_signature(key) {
+        return Ok(false);
       }
-      Cosigner::Validator(_) => return Ok(false),
-    };
+    }
 
     // Check our finalized blockchain exceeds this block number
     if self.serai.latest_finalized_block().await.map_err(|e| format!("{e:?}"))?.number() <
@@ -371,10 +398,6 @@ impl<D: Db> Cosigning<D> {
 
     // Since we verified this cosign's signature, and have a chain sufficiently long, handle the
     // cosign
-
-    // Save the cosign to the database
-    cosigns_for_this_block_position.push(signed_cosign.clone());
-    Cosigns::set(&mut txn, cosign.block_number, &cosigns_for_this_block_position);
 
     let our_block_hash = self
       .serai
@@ -389,13 +412,7 @@ impl<D: Db> Cosigning<D> {
         return Ok(true);
       }
 
-      if NetworksLatestCosignedBlock::get(&txn, network)
-        .map(|cosign| cosign.cosign.block_number)
-        .unwrap_or(0) <
-        cosign.block_number
-      {
-        NetworksLatestCosignedBlock::set(&mut txn, network, &signed_cosign);
-      }
+      NetworksLatestCosignedBlock::set(&mut txn, cosign.global_session, network, &signed_cosign);
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
       // Only handle this as a fault if this set wasn't prior faulty

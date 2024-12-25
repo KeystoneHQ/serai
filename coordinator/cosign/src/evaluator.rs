@@ -5,11 +5,18 @@ use serai_client::{primitives::Amount, Serai};
 use serai_db::*;
 use serai_task::ContinuallyRan;
 
-use crate::{*, intend::BlockHasEvents};
+use crate::{
+  *,
+  intend::{BlockEventData, BlockEvents},
+};
 
 create_db!(
   SubstrateCosignEvaluator {
+    // The latest cosigned block number.
     LatestCosignedBlockNumber: () -> u64,
+    // The latest global session evaluated.
+    // TODO: Also include the weights here
+    LatestGlobalSessionEvaluated: () -> ([u8; 32], Vec<ValidatorSet>),
   }
 );
 
@@ -20,7 +27,23 @@ pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
   pub(crate) request: R,
 }
 
-// TODO: Add a cache for the stake values
+async fn get_latest_global_session_evaluated(
+  txn: &mut impl DbTxn,
+  serai: &Serai,
+  parent_hash: [u8; 32],
+) -> Result<([u8; 32], Vec<ValidatorSet>), String> {
+  Ok(match LatestGlobalSessionEvaluated::get(txn) {
+    Some(res) => res,
+    None => {
+      // This is the initial global session
+      // Fetch the sets participating and declare it the latest value recognized
+      let sets = cosigning_sets_by_parent_hash(serai, parent_hash).await?;
+      let initial_global_session = GlobalSession::new(sets.clone()).id();
+      LatestGlobalSessionEvaluated::set(txn, &(initial_global_session, sets.clone()));
+      (initial_global_session, sets)
+    }
+  })
+}
 
 impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, R> {
   fn run_iteration(&mut self) -> impl Send + Future<Output = Result<bool, String>> {
@@ -31,23 +54,26 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
       let mut made_progress = false;
       loop {
         let mut txn = self.db.txn();
-        let Some((block_number, has_events)) = BlockHasEvents::try_recv(&mut txn) else { break };
+        let Some(BlockEventData { block_number, parent_hash, block_hash, has_events }) =
+          BlockEvents::try_recv(&mut txn)
+        else {
+          break;
+        };
         // Make sure these two feeds haven't desynchronized somehow
         // We could remove our `LatestCosignedBlockNumber`, making the latest cosigned block number
         // the next message in the channel's block number minus one, but that'd only work when the
         // channel isn't empty
         assert_eq!(block_number, latest_cosigned_block_number + 1);
 
-        let cosigns_for_block = Cosigns::get(&txn, block_number).unwrap_or(vec![]);
-
         match has_events {
           // Because this had notable events, we require an explicit cosign for this block by a
           // supermajority of the prior block's validator sets
           HasEvents::Notable => {
+            let (global_session, sets) =
+              get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
+
             let mut weight_cosigned = 0;
             let mut total_weight = 0;
-            let (_block, sets) = cosigning_sets_for_block(&self.serai, block_number).await?;
-            let global_session = GlobalSession::new(sets.clone()).id();
             let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session).expect(
               "checking if intended cosign was satisfied within an unrecognized global session",
             );
@@ -68,9 +94,9 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               total_weight += stake;
 
               // Check if we have the cosign from this set
-              if cosigns_for_block
-                .iter()
-                .any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(set.network))
+              if NetworksLatestCosignedBlock::get(&txn, global_session, set.network)
+                .map(|signed_cosign| signed_cosign.cosign.block_number) ==
+                Some(block_number)
               {
                 // Since have this cosign, add the set's weight to the weight which has cosigned
                 weight_cosigned += stake;
@@ -89,6 +115,13 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               return Err(format!(
                 "notable block (#{block_number}) wasn't yet cosigned. this should resolve shortly",
               ));
+            }
+
+            // Since this block changes the global session, update it
+            {
+              let sets = cosigning_sets(&self.serai.as_of(block_hash)).await?;
+              let global_session = GlobalSession::new(sets.clone()).id();
+              LatestGlobalSessionEvaluated::set(&mut txn, &(global_session, sets));
             }
           }
           // Since this block didn't have any notable events, we simply require a cosign for this
@@ -112,8 +145,8 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               */
 
               // Get the global session for this block
-              let (_block, sets) = cosigning_sets_for_block(&self.serai, block_number).await?;
-              let global_session = GlobalSession::new(sets.clone()).id();
+              let (global_session, sets) =
+                get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
               let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session)
                 .expect(
                   "checking if intended cosign was satisfied within an unrecognized global session",
@@ -136,7 +169,9 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
                 total_weight += stake;
 
                 // Check if this set cosigned this block or not
-                let Some(cosign) = NetworksLatestCosignedBlock::get(&txn, set.network) else {
+                let Some(cosign) =
+                  NetworksLatestCosignedBlock::get(&txn, global_session, set.network)
+                else {
                   continue;
                 };
                 if cosign.cosign.block_number >= block_number {
@@ -167,6 +202,11 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               }
 
               // Update the cached result for the block we know is cosigned
+              /*
+                There may be a higher block which was cosigned, but once we get to this block,
+                we'll re-evaluate and find it then. The alternative would be an optimistic
+                re-evaluation now. Both are fine, so the lower-complexity option is preferred.
+              */
               known_cosign = lowest_common_block;
             }
           }
