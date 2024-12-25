@@ -62,6 +62,8 @@ create_db! {
   Cosign {
     // A mapping from a global session's ID to its start block (number, hash).
     GlobalSessions: (global_session: [u8; 32]) -> (u64, [u8; 32]),
+    // The last block to be cosigned by a global session.
+    GlobalSessionLastBlock: (global_session: [u8; 32]) -> u64,
     // The latest global session intended.
     //
     // This is distinct from the latest global session for which we've evaluated the cosigns for.
@@ -295,7 +297,7 @@ impl<D: Db> Cosigning<D> {
   /// cosigns, in case of a fault, to induce identification of the fault by others.
   pub fn cosigns_to_rebroadcast(&self) -> Vec<SignedCosign> {
     if let Some(faulted) = FaultedSession::get(&self.db) {
-      let mut cosigns = Faults::get(&self.db, faulted).unwrap();
+      let mut cosigns = Faults::get(&self.db, faulted).expect("faulted with no faults");
       // Also include all of our recognized-as-honest cosigns in an attempt to induce fault
       // identification in those who see the faulty cosigns as honest
       for network in serai_client::primitives::NETWORKS {
@@ -345,25 +347,32 @@ impl<D: Db> Cosigning<D> {
       return Ok(false);
     };
 
-    // Check if we should even bother handling this cosign
-    let mut txn = self.db.txn();
-    // TODO: A malicious validator set can sign a block after their notable block to erase a
-    // notable cosign
-    if let Some(existing) = NetworksLatestCosignedBlock::get(&txn, cosign.global_session, network) {
+    // Check this isn't a dated cosign
+    if let Some(existing) =
+      NetworksLatestCosignedBlock::get(&self.db, cosign.global_session, network)
+    {
       if existing.cosign.block_number >= cosign.block_number {
         return Ok(true);
       }
     }
 
-    // Check we can verify this cosign's signature
+    // Check our finalized (and indexed by intend) blockchain exceeds this block number
+    if cosign.block_number >= intend::ScanCosignFrom::get(&self.db).unwrap_or(0) {
+      return Ok(true);
+    }
+
     let Some((global_session_start_block_number, global_session_start_block_hash)) =
-      GlobalSessions::get(&txn, cosign.global_session)
+      GlobalSessions::get(&self.db, cosign.global_session)
     else {
       // Unrecognized global session
       return Ok(true);
     };
     if cosign.block_number <= global_session_start_block_number {
       // Cosign is for a block predating the global session
+      return Ok(false);
+    }
+    if Some(cosign.block_number) > GlobalSessionLastBlock::get(&self.db, cosign.global_session) {
+      // Cosign is for a block after the last block this global session should have signed
       return Ok(false);
     }
 
@@ -388,23 +397,17 @@ impl<D: Db> Cosigning<D> {
       }
     }
 
-    // Check our finalized blockchain exceeds this block number
-    if self.serai.latest_finalized_block().await.map_err(|e| format!("{e:?}"))?.number() <
-      cosign.block_number
-    {
-      // Unrecognized block number
-      return Ok(true);
-    }
-
     // Since we verified this cosign's signature, and have a chain sufficiently long, handle the
     // cosign
+
+    let mut txn = self.db.txn();
 
     let our_block_hash = self
       .serai
       .block_hash(cosign.block_number)
       .await
       .map_err(|e| format!("{e:?}"))?
-      .expect("requested hash of a finalized block yet received None");
+      .ok_or_else(|| "requested hash of a finalized block yet received None".to_string())?;
     if our_block_hash == cosign.block_hash {
       // If this is for a future global session, we don't acknowledge this cosign at this time
       if global_session_start_block_number > LatestCosignedBlockNumber::get(&txn).unwrap_or(0) {
@@ -445,10 +448,6 @@ impl<D: Db> Cosigning<D> {
         }
 
         // Check if the sum weight means a fault has occurred
-        assert!(
-          total_weight != 0,
-          "evaluating valid cosign when no stake was present in the system"
-        );
         if weight_cosigned >= ((total_weight * 17) / 100) {
           FaultedSession::set(&mut txn, &cosign.global_session);
         }

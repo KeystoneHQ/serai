@@ -74,9 +74,11 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
 
             let mut weight_cosigned = 0;
             let mut total_weight = 0;
-            let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session).expect(
-              "checking if intended cosign was satisfied within an unrecognized global session",
-            );
+            let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session)
+              .ok_or_else(|| {
+                "checking if intended cosign was satisfied within an unrecognized global session"
+                  .to_string()
+              })?;
             for set in sets {
               // Fetch the weight for this set, as of the start of the global session
               // This simplifies the logic around which set of stakes to use when evaluating
@@ -148,9 +150,10 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               let (global_session, sets) =
                 get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
               let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session)
-                .expect(
-                  "checking if intended cosign was satisfied within an unrecognized global session",
-                );
+                .ok_or_else(|| {
+                  "checking if intended cosign was satisfied within an unrecognized global session"
+                    .to_string()
+                })?;
 
               let mut weight_cosigned = 0;
               let mut total_weight = 0;

@@ -1,6 +1,6 @@
 use core::future::Future;
 
-use serai_client::{SeraiError, Serai, validator_sets::primitives::ValidatorSet};
+use serai_client::{Serai, validator_sets::primitives::ValidatorSet};
 
 use serai_db::*;
 use serai_task::ContinuallyRan;
@@ -31,18 +31,19 @@ db_channel! {
 async fn block_has_events_justifying_a_cosign(
   serai: &Serai,
   block_number: u64,
-) -> Result<(Block, HasEvents), SeraiError> {
+) -> Result<(Block, HasEvents), String> {
   let block = serai
     .finalized_block_by_number(block_number)
-    .await?
-    .expect("couldn't get block which should've been finalized");
+    .await
+    .map_err(|e| format!("{e:?}"))?
+    .ok_or_else(|| "couldn't get block which should've been finalized".to_string())?;
   let serai = serai.as_of(block.hash());
 
-  if !serai.validator_sets().key_gen_events().await?.is_empty() {
+  if !serai.validator_sets().key_gen_events().await.map_err(|e| format!("{e:?}"))?.is_empty() {
     return Ok((block, HasEvents::Notable));
   }
 
-  if !serai.coins().burn_with_instruction_events().await?.is_empty() {
+  if !serai.coins().burn_with_instruction_events().await.map_err(|e| format!("{e:?}"))?.is_empty() {
     return Ok((block, HasEvents::NonNotable));
   }
 
@@ -79,7 +80,10 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
             if has_events == HasEvents::Notable {
               let sets = cosigning_sets(&self.serai.as_of(block.hash())).await?;
               let global_session = GlobalSession::new(sets).id();
-              GlobalSessions::set(&mut txn, global_session, &(block.number(), block.hash()));
+              GlobalSessions::set(&mut txn, global_session, &(block_number, block.hash()));
+              if let Some(ending_global_session) = LatestGlobalSessionIntended::get(&txn) {
+                GlobalSessionLastBlock::set(&mut txn, ending_global_session, &block_number);
+              }
               LatestGlobalSessionIntended::set(&mut txn, &global_session);
             }
 
