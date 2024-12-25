@@ -70,7 +70,7 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               // Check if we have the cosign from this set
               if cosigns_for_block
                 .iter()
-                .any(|cosign| cosign.cosigner == Cosigner::ValidatorSet(set.network))
+                .any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(set.network))
               {
                 // Since have this cosign, add the set's weight to the weight which has cosigned
                 weight_cosigned += stake;
@@ -139,14 +139,14 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
                 let Some(cosign) = NetworksLatestCosignedBlock::get(&txn, set.network) else {
                   continue;
                 };
-                if cosign.block_number >= block_number {
+                if cosign.cosign.block_number >= block_number {
                   weight_cosigned += total_weight
                 }
 
                 // Update the lowest block common to all of these cosigns
                 lowest_common_block = lowest_common_block
-                  .map(|existing| existing.min(cosign.block_number))
-                  .or(Some(cosign.block_number));
+                  .map(|existing| existing.min(cosign.cosign.block_number))
+                  .or(Some(cosign.cosign.block_number));
               }
 
               // Check if the sum weight doesn't cross the required threshold

@@ -23,6 +23,9 @@ mod intend;
 mod evaluator;
 use evaluator::LatestCosignedBlockNumber;
 
+/// The schnorrkel context to used when signing a cosign.
+pub const COSIGN_CONTEXT: &[u8] = b"serai-cosign";
+
 /// A 'global session', defined as all validator sets used for cosigning at a given moment.
 ///
 /// We evaluate cosign faults within a global session. This ensures even if cosigners cosign
@@ -63,14 +66,14 @@ create_db! {
     //
     // This will only be populated with cosigns predating or during the most recent global session
     // to have its start cosigned.
-    Cosigns: (block_number: u64) -> Vec<Cosign>,
+    Cosigns: (block_number: u64) -> Vec<SignedCosign>,
     // The latest cosigned block for each network.
     //
     // This will only be populated with cosigns predating or during the most recent global session
     // to have its start cosigned.
-    NetworksLatestCosignedBlock: (network: NetworkId) -> Cosign,
+    NetworksLatestCosignedBlock: (network: NetworkId) -> SignedCosign,
     // Cosigns received for blocks not locally recognized as finalized.
-    Faults: (global_session: [u8; 32]) -> Vec<Cosign>,
+    Faults: (global_session: [u8; 32]) -> Vec<SignedCosign>,
     // The global session which faulted.
     FaultedSession: () -> [u8; 32],
   }
@@ -105,7 +108,7 @@ struct CosignIntent {
 
 /// The identification of a cosigner.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, BorshSerialize, BorshDeserialize)]
-enum Cosigner {
+pub enum Cosigner {
   /// The network which produced this cosign.
   ValidatorSet(NetworkId),
   /// The individual validator which produced this cosign.
@@ -113,16 +116,34 @@ enum Cosigner {
 }
 
 /// A cosign.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, BorshSerialize, BorshDeserialize)]
-struct Cosign {
+#[derive(Clone, PartialEq, Eq, Debug, BorshSerialize, BorshDeserialize)]
+pub struct Cosign {
   /// The global session this cosign is being performed under.
-  global_session: [u8; 32],
+  pub global_session: [u8; 32],
   /// The number of the block to cosign.
-  block_number: u64,
+  pub block_number: u64,
   /// The hash of the block to cosign.
-  block_hash: [u8; 32],
+  pub block_hash: [u8; 32],
   /// The actual cosigner.
-  cosigner: Cosigner,
+  pub cosigner: Cosigner,
+}
+
+/// A signed cosign.
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
+pub struct SignedCosign {
+  /// The cosign.
+  pub cosign: Cosign,
+  /// The signature for the cosign.
+  pub signature: [u8; 64],
+}
+
+impl SignedCosign {
+  fn verify_signature(&self, signer: serai_client::Public) -> bool {
+    let Ok(signer) = schnorrkel::PublicKey::from_bytes(&signer.0) else { return false };
+    let Ok(signature) = schnorrkel::Signature::from_bytes(&self.signature) else { return false };
+
+    signer.verify_simple(COSIGN_CONTEXT, &borsh::to_vec(&self.cosign).unwrap(), &signature).is_ok()
+  }
 }
 
 /// Construct a `TemporalSerai` bound to the time used for cosigning this block.
@@ -258,7 +279,7 @@ impl<D: Db> Cosigning<D> {
   }
 
   /// Fetch the notable cosigns for a global session in order to respond to requests.
-  pub fn notable_cosigns(&self, global_session: [u8; 32]) -> Vec<Cosign> {
+  pub fn notable_cosigns(&self, global_session: [u8; 32]) -> Vec<SignedCosign> {
     todo!("TODO")
   }
 
@@ -266,14 +287,14 @@ impl<D: Db> Cosigning<D> {
   ///
   /// This will be the most recent cosigns, in case the initial broadcast failed, or the faulty
   /// cosigns, in case of a fault, to induce identification of the fault by others.
-  pub fn cosigns_to_rebroadcast(&self) -> Vec<Cosign> {
+  pub fn cosigns_to_rebroadcast(&self) -> Vec<SignedCosign> {
     if let Some(faulted) = FaultedSession::get(&self.db) {
       let mut cosigns = Faults::get(&self.db, faulted).unwrap();
       // Also include all of our recognized-as-honest cosigns in an attempt to induce fault
       // identification in those who see the faulty cosigns as honest
       for network in serai_client::primitives::NETWORKS {
         if let Some(cosign) = NetworksLatestCosignedBlock::get(&self.db, network) {
-          if cosign.global_session == faulted {
+          if cosign.cosign.global_session == faulted {
             cosigns.push(cosign);
           }
         }
@@ -303,12 +324,14 @@ impl<D: Db> Cosigning<D> {
   // more relevant, cosign) again.
   //
   // Takes `&mut self` as this should only be called once at any given moment.
-  pub async fn intake_cosign(&mut self, cosign: Cosign) -> Result<bool, String> {
+  pub async fn intake_cosign(&mut self, signed_cosign: SignedCosign) -> Result<bool, String> {
+    let cosign = &signed_cosign.cosign;
+
     // Check if we've prior handled this cosign
     let mut txn = self.db.txn();
     let mut cosigns_for_this_block_position =
       Cosigns::get(&txn, cosign.block_number).unwrap_or(vec![]);
-    if cosigns_for_this_block_position.iter().any(|existing| *existing == cosign) {
+    if cosigns_for_this_block_position.iter().any(|existing| existing.cosign == *cosign) {
       return Ok(true);
     }
 
@@ -329,7 +352,9 @@ impl<D: Db> Cosigning<D> {
           return Ok(false);
         };
 
-        todo!("TODO");
+        if !signed_cosign.verify_signature(keys.0) {
+          return Ok(false);
+        }
 
         network
       }
@@ -348,7 +373,7 @@ impl<D: Db> Cosigning<D> {
     // cosign
 
     // Save the cosign to the database
-    cosigns_for_this_block_position.push(cosign);
+    cosigns_for_this_block_position.push(signed_cosign.clone());
     Cosigns::set(&mut txn, cosign.block_number, &cosigns_for_this_block_position);
 
     let our_block_hash = self
@@ -359,23 +384,23 @@ impl<D: Db> Cosigning<D> {
       .expect("requested hash of a finalized block yet received None");
     if our_block_hash == cosign.block_hash {
       // If this is for a future global session, we don't acknowledge this cosign at this time
-      if global_session_start_block_number > LatestCosignedBlockNumber::get(&self.db).unwrap_or(0) {
+      if global_session_start_block_number > LatestCosignedBlockNumber::get(&txn).unwrap_or(0) {
         drop(txn);
         return Ok(true);
       }
 
       if NetworksLatestCosignedBlock::get(&txn, network)
-        .map(|cosign| cosign.block_number)
+        .map(|cosign| cosign.cosign.block_number)
         .unwrap_or(0) <
         cosign.block_number
       {
-        NetworksLatestCosignedBlock::set(&mut txn, network, &cosign);
+        NetworksLatestCosignedBlock::set(&mut txn, network, &signed_cosign);
       }
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
       // Only handle this as a fault if this set wasn't prior faulty
-      if !faults.iter().any(|cosign| cosign.cosigner == Cosigner::ValidatorSet(network)) {
-        faults.push(cosign);
+      if !faults.iter().any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(network)) {
+        faults.push(signed_cosign.clone());
         Faults::set(&mut txn, cosign.global_session, &faults);
 
         let mut weight_cosigned = 0;
@@ -394,7 +419,10 @@ impl<D: Db> Cosigning<D> {
           total_weight += stake;
 
           // Check if this set cosigned this block or not
-          if faults.iter().any(|cosign| cosign.cosigner == Cosigner::ValidatorSet(set.network)) {
+          if faults
+            .iter()
+            .any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(set.network))
+          {
             weight_cosigned += total_weight
           }
         }

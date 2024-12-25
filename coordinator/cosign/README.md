@@ -114,8 +114,8 @@ asynchronous network or 11.33% of non-Serai validator sets' stake.
 ### TODO
 
 The Serai node no longer responding to RPC requests upon detecting any
-equivocation, and the fallback protocol where validators individually produce
-signatures, are not implemented at this time. The former means the detection of
-equivocating cosigns not redundant and the latter makes 5.67% of non-Serai
-validator sets' stake the DoS threshold, even without control of an
-asynchronous network.
+equivocation, the delayed acknowledgement of cosigns, and the fallback protocol
+where validators individually produce signatures, are not implemented at this
+time. The former means the detection of equivocating cosigns not redundant and
+the latter makes 5.67% of non-Serai validator sets' stake the DoS threshold,
+even without control of an asynchronous network.
