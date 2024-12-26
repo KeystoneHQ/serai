@@ -347,10 +347,12 @@ impl<D: Db> Cosigning<D> {
       // Cosign is for a block predating the global session
       return Ok(false);
     }
-    if let Some(last_block) = GlobalSessionsLastBlock::get(&self.db, cosign.global_session) {
-      if cosign.block_number > last_block {
-        // Cosign is for a block after the last block this global session should have signed
-        return Ok(false);
+    if !faulty {
+      if let Some(last_block) = GlobalSessionsLastBlock::get(&self.db, cosign.global_session) {
+        if cosign.block_number > last_block {
+          // Cosign is for a block after the last block this global session should have signed
+          return Ok(false);
+        }
       }
     }
 
