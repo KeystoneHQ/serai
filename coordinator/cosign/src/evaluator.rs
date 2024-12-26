@@ -1,13 +1,11 @@
 use core::future::Future;
 
-use serai_client::Serai;
-
 use serai_db::*;
 use serai_task::ContinuallyRan;
 
 use crate::{
-  *,
-  intend::{BlockEventData, BlockEvents},
+  HasEvents, GlobalSession, NetworksLatestCosignedBlock, RequestNotableCosigns,
+  intend::{GlobalSessionsChannel, BlockEventData, BlockEvents},
 };
 
 create_db!(
@@ -15,34 +13,51 @@ create_db!(
     // The latest cosigned block number.
     LatestCosignedBlockNumber: () -> u64,
     // The latest global session evaluated.
-    LatestGlobalSessionEvaluated: () -> ([u8; 32], Vec<ValidatorSet>),
+    LatestGlobalSessionEvaluated: () -> ([u8; 32], GlobalSession),
   }
 );
 
 /// A task to determine if a block has been cosigned and we should handle it.
-// TODO: Remove `serai` from this
 pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
   pub(crate) db: D,
-  pub(crate) serai: Serai,
   pub(crate) request: R,
 }
 
-async fn get_latest_global_session_evaluated(
+fn get_latest_global_session_evaluated(
   txn: &mut impl DbTxn,
-  serai: &Serai,
-  parent_hash: [u8; 32],
-) -> Result<([u8; 32], Vec<ValidatorSet>), String> {
-  Ok(match LatestGlobalSessionEvaluated::get(txn) {
-    Some(res) => res,
-    None => {
-      // This is the initial global session
-      // Fetch the sets participating and declare it the latest value recognized
-      let sets = cosigning_sets_by_parent_hash(serai, parent_hash).await?;
-      let initial_global_session = GlobalSession::id(sets.clone());
-      LatestGlobalSessionEvaluated::set(txn, &(initial_global_session, sets.clone()));
-      (initial_global_session, sets)
+  block_number: u64,
+) -> ([u8; 32], GlobalSession) {
+  let mut res = {
+    let existing = match LatestGlobalSessionEvaluated::get(txn) {
+      Some(existing) => existing,
+      None => {
+        let first = GlobalSessionsChannel::try_recv(txn)
+          .expect("fetching latest global session yet none declared");
+        LatestGlobalSessionEvaluated::set(txn, &first);
+        first
+      }
+    };
+    assert!(
+      existing.1.start_block_number <= block_number,
+      "candidate's start block number exceeds our block number"
+    );
+    existing
+  };
+
+  if let Some(next) = GlobalSessionsChannel::peek(txn) {
+    assert!(
+      block_number <= next.1.start_block_number,
+      "get_latest_global_session_evaluated wasn't called incrementally"
+    );
+    // If it's time for this session to activate, take it from the channel and set it
+    if block_number == next.1.start_block_number {
+      GlobalSessionsChannel::try_recv(txn).unwrap();
+      LatestGlobalSessionEvaluated::set(txn, &next);
+      res = next;
     }
-  })
+  }
+
+  res
 }
 
 impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, R> {
@@ -54,8 +69,7 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
       let mut made_progress = false;
       loop {
         let mut txn = self.db.txn();
-        let Some(BlockEventData { block_number, parent_hash, block_hash, has_events }) =
-          BlockEvents::try_recv(&mut txn)
+        let Some(BlockEventData { block_number, has_events }) = BlockEvents::try_recv(&mut txn)
         else {
           break;
         };
@@ -69,16 +83,11 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
           // Because this had notable events, we require an explicit cosign for this block by a
           // supermajority of the prior block's validator sets
           HasEvents::Notable => {
-            let (global_session, sets) =
-              get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
+            let (global_session, global_session_info) =
+              get_latest_global_session_evaluated(&mut txn, block_number);
 
             let mut weight_cosigned = 0;
-            let global_session_info =
-              GlobalSessions::get(&txn, global_session).ok_or_else(|| {
-                "checking if intended cosign was satisfied within an unrecognized global session"
-                  .to_string()
-              })?;
-            for set in sets {
+            for set in global_session_info.sets {
               // Check if we have the cosign from this set
               if NetworksLatestCosignedBlock::get(&txn, global_session, set.network)
                 .map(|signed_cosign| signed_cosign.cosign.block_number) ==
@@ -105,14 +114,6 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
                 "notable block (#{block_number}) wasn't yet cosigned. this should resolve shortly",
               ));
             }
-
-            // Since this block changes the global session, update it
-            {
-              let sets = cosigning_sets(&self.serai.as_of(block_hash)).await?;
-              let sets = sets.into_iter().map(|(set, _key)| set).collect::<Vec<_>>();
-              let global_session = GlobalSession::id(sets.clone());
-              LatestGlobalSessionEvaluated::set(&mut txn, &(global_session, sets));
-            }
           }
           // Since this block didn't have any notable events, we simply require a cosign for this
           // block or a greater block by the current validator sets
@@ -135,17 +136,12 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               */
 
               // Get the global session for this block
-              let (global_session, sets) =
-                get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
-              let global_session_info =
-                GlobalSessions::get(&txn, global_session).ok_or_else(|| {
-                  "checking if intended cosign was satisfied within an unrecognized global session"
-                    .to_string()
-                })?;
+              let (global_session, global_session_info) =
+                get_latest_global_session_evaluated(&mut txn, block_number);
 
               let mut weight_cosigned = 0;
               let mut lowest_common_block: Option<u64> = None;
-              for set in sets {
+              for set in global_session_info.sets {
                 // Check if this set cosigned this block or not
                 let Some(cosign) =
                   NetworksLatestCosignedBlock::get(&txn, global_session, set.network)

@@ -21,13 +21,12 @@ create_db!(
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub(crate) struct BlockEventData {
   pub(crate) block_number: u64,
-  pub(crate) parent_hash: [u8; 32],
-  pub(crate) block_hash: [u8; 32],
   pub(crate) has_events: HasEvents,
 }
 
 db_channel! {
   CosignIntendChannels {
+    GlobalSessionsChannel: () -> ([u8; 32], GlobalSession),
     BlockEvents: () -> BlockEventData,
     IntendedCosigns: (set: ValidatorSet) -> CosignIntent,
   }
@@ -87,88 +86,90 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
             block_number - 1
           ))?;
         }
-
         SubstrateBlocks::set(&mut txn, block_number, &block.hash());
+
+        let global_session_for_this_block = LatestGlobalSessionIntended::get(&txn);
+
+        // If this is notable, it creates a new global session, which we index into the database
+        // now
+        if has_events == HasEvents::Notable {
+          let serai = self.serai.as_of(block.hash());
+          let sets_and_keys = cosigning_sets(&serai).await?;
+          let global_session =
+            GlobalSession::id(sets_and_keys.iter().map(|(set, _key)| *set).collect());
+
+          let mut sets = Vec::with_capacity(sets_and_keys.len());
+          let mut keys = HashMap::with_capacity(sets_and_keys.len());
+          let mut stakes = HashMap::with_capacity(sets_and_keys.len());
+          let mut total_stake = 0;
+          for (set, key) in &sets_and_keys {
+            sets.push(*set);
+            keys.insert(set.network, SeraiAddress::from(*key));
+            let stake = serai
+              .validator_sets()
+              .total_allocated_stake(set.network)
+              .await
+              .map_err(|e| format!("{e:?}"))?
+              .unwrap_or(Amount(0))
+              .0;
+            stakes.insert(set.network, stake);
+            total_stake += stake;
+          }
+          if total_stake == 0 {
+            Err(format!("cosigning sets for block #{block_number} had 0 stake in total"))?;
+          }
+
+          let global_session_info = GlobalSession {
+            // This session starts cosigning after this block, as this block must be cosigned by
+            // the existing validators
+            start_block_number: block_number + 1,
+            sets,
+            keys,
+            stakes,
+            total_stake,
+          };
+          GlobalSessions::set(&mut txn, global_session, &global_session_info);
+          if let Some(ending_global_session) = global_session_for_this_block {
+            GlobalSessionsLastBlock::set(&mut txn, ending_global_session, &block_number);
+          }
+          LatestGlobalSessionIntended::set(&mut txn, &global_session);
+          GlobalSessionsChannel::send(&mut txn, &(global_session, global_session_info));
+        }
+
+        // If there isn't anyone available to cosign this block, meaning it'll never be cosigned,
+        // we flag it as not having any events requiring cosigning so we don't attempt to
+        // sign/require a cosign for it
+        if global_session_for_this_block.is_none() {
+          has_events = HasEvents::No;
+        }
 
         match has_events {
           HasEvents::Notable | HasEvents::NonNotable => {
-            // TODO: Replace with LatestGlobalSessionIntended, GlobalSessions
-            let sets = cosigning_sets_for_block(&self.serai, &block).await?;
+            let global_session_for_this_block = global_session_for_this_block
+              .expect("global session for this block was None but still attempting to cosign it");
+            let global_session_info = GlobalSessions::get(&txn, global_session_for_this_block)
+              .expect("last global session intended wasn't saved to the database");
 
-            // If this block doesn't have any cosigners, meaning it'll never be cosigned, we flag
-            // it as not having any events requiring cosigning so we don't attempt to sign/require
-            // a cosign for it
-            if sets.is_empty() {
-              has_events = HasEvents::No;
-            }
-
-            // If this is notable, it creates a new global session, which we index into the
-            // database now
-            if has_events == HasEvents::Notable {
-              let serai = self.serai.as_of(block.hash());
-              let sets = cosigning_sets(&serai).await?;
-              let global_session = GlobalSession::id(sets.iter().map(|(set, _key)| *set).collect());
-
-              let mut keys = HashMap::new();
-              let mut stakes = HashMap::new();
-              let mut total_stake = 0;
-              for (set, key) in &sets {
-                keys.insert(set.network, SeraiAddress::from(*key));
-                let stake = serai
-                  .validator_sets()
-                  .total_allocated_stake(set.network)
-                  .await
-                  .map_err(|e| format!("{e:?}"))?
-                  .unwrap_or(Amount(0))
-                  .0;
-                stakes.insert(set.network, stake);
-                total_stake += stake;
-              }
-              if total_stake == 0 {
-                Err(format!("cosigning sets for block #{block_number} had 0 stake in total"))?;
-              }
-
-              GlobalSessions::set(
+            // Tell each set of their expectation to cosign this block
+            for set in global_session_info.sets {
+              log::debug!("{:?} will be cosigning block #{block_number}", set);
+              IntendedCosigns::send(
                 &mut txn,
-                global_session,
-                &(GlobalSession { start_block_number: block_number, keys, stakes, total_stake }),
+                set,
+                &CosignIntent {
+                  global_session: global_session_for_this_block,
+                  block_number,
+                  block_hash: block.hash(),
+                  notable: has_events == HasEvents::Notable,
+                },
               );
-              if let Some(ending_global_session) = LatestGlobalSessionIntended::get(&txn) {
-                GlobalSessionsLastBlock::set(&mut txn, ending_global_session, &block_number);
-              }
-              LatestGlobalSessionIntended::set(&mut txn, &global_session);
-            }
-
-            if has_events != HasEvents::No {
-              let global_session = GlobalSession::id(sets.clone());
-              // Tell each set of their expectation to cosign this block
-              for set in sets {
-                log::debug!("{:?} will be cosigning block #{block_number}", set);
-                IntendedCosigns::send(
-                  &mut txn,
-                  set,
-                  &CosignIntent {
-                    global_session,
-                    block_number,
-                    block_hash: block.hash(),
-                    notable: has_events == HasEvents::Notable,
-                  },
-                );
-              }
             }
           }
           HasEvents::No => {}
         }
+
         // Populate a singular feed with every block's status for the evluator to work off of
-        BlockEvents::send(
-          &mut txn,
-          &(BlockEventData {
-            block_number,
-            parent_hash: block.header.parent_hash.into(),
-            block_hash: block.hash(),
-            has_events,
-          }),
-        );
+        BlockEvents::send(&mut txn, &(BlockEventData { block_number, has_events }));
         // Mark this block as handled, meaning we should scan from the next block moving on
         ScanCosignFrom::set(&mut txn, &(block_number + 1));
         txn.commit();

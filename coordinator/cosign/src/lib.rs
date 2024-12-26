@@ -48,6 +48,7 @@ pub const COSIGN_CONTEXT: &[u8] = b"serai-cosign";
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub(crate) struct GlobalSession {
   pub(crate) start_block_number: u64,
+  pub(crate) sets: Vec<ValidatorSet>,
   pub(crate) keys: HashMap<NetworkId, SeraiAddress>,
   pub(crate) stakes: HashMap<NetworkId, u64>,
   pub(crate) total_stake: u64,
@@ -120,15 +121,6 @@ struct CosignIntent {
   notable: bool,
 }
 
-/// The identification of a cosigner.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, BorshSerialize, BorshDeserialize)]
-pub enum Cosigner {
-  /// The network which produced this cosign.
-  ValidatorSet(NetworkId),
-  /// The individual validator which produced this cosign.
-  Validator(SeraiAddress),
-}
-
 /// A cosign.
 #[derive(Clone, PartialEq, Eq, Debug, BorshSerialize, BorshDeserialize)]
 pub struct Cosign {
@@ -139,7 +131,7 @@ pub struct Cosign {
   /// The hash of the block to cosign.
   pub block_hash: [u8; 32],
   /// The actual cosigner.
-  pub cosigner: Cosigner,
+  pub cosigner: NetworkId,
 }
 
 /// A signed cosign.
@@ -211,29 +203,6 @@ async fn cosigning_sets(serai: &TemporalSerai<'_>) -> Result<Vec<(ValidatorSet, 
   Ok(sets)
 }
 
-/// Fetch the `ValidatorSet`s, and their associated keys, used for cosigning a block by the block's
-/// parent hash.
-async fn cosigning_sets_by_parent_hash(
-  serai: &Serai,
-  parent_hash: [u8; 32],
-) -> Result<Vec<ValidatorSet>, String> {
-  /*
-    If we're cosigning block `n`, it's cosigned by the sets as of block `n-1` (as block `n` may
-    update the sets declared but that update shouldn't take effect until block `n` is cosigned).
-    That's why fetching the cosigning sets for a block by its parent hash is valid.
-  */
-  let sets = cosigning_sets(&serai.as_of(parent_hash)).await?;
-  Ok(sets.into_iter().map(|(set, _key)| set).collect::<Vec<_>>())
-}
-
-/// Fetch the `ValidatorSet`s, and their associated keys, used for cosigning this block.
-async fn cosigning_sets_for_block(
-  serai: &Serai,
-  block: &Block,
-) -> Result<Vec<ValidatorSet>, String> {
-  cosigning_sets_by_parent_hash(serai, block.header.parent_hash.into()).await
-}
-
 /// An object usable to request notable cosigns for a block.
 pub trait RequestNotableCosigns: 'static + Send {
   /// The error type which may be encountered when requesting notable cosigns.
@@ -267,11 +236,11 @@ impl<D: Db> Cosigning<D> {
     let (intend_task, _intend_task_handle) = Task::new();
     let (evaluator_task, evaluator_task_handle) = Task::new();
     tokio::spawn(
-      (intend::CosignIntendTask { db: db.clone(), serai: serai.clone() })
+      (intend::CosignIntendTask { db: db.clone(), serai })
         .continually_run(intend_task, vec![evaluator_task_handle]),
     );
     tokio::spawn(
-      (evaluator::CosignEvaluatorTask { db: db.clone(), serai, request })
+      (evaluator::CosignEvaluatorTask { db: db.clone(), request })
         .continually_run(evaluator_task, tasks_to_run_upon_cosigning),
     );
     Self { db }
@@ -349,12 +318,7 @@ impl<D: Db> Cosigning<D> {
   // TODO: Don't overload bool here
   pub fn intake_cosign(&mut self, signed_cosign: &SignedCosign) -> Result<bool, String> {
     let cosign = &signed_cosign.cosign;
-
-    let Cosigner::ValidatorSet(network) = cosign.cosigner else {
-      // TODO
-      // Individually signed cosign despite that protocol not being implemented
-      return Ok(false);
-    };
+    let network = cosign.cosigner;
 
     // Check this isn't a dated cosign
     if let Some(existing) =
@@ -374,7 +338,7 @@ impl<D: Db> Cosigning<D> {
       // Unrecognized global session
       return Ok(true);
     };
-    if cosign.block_number <= global_session.start_block_number {
+    if cosign.block_number < global_session.start_block_number {
       // Cosign is for a block predating the global session
       return Ok(false);
     }
@@ -387,14 +351,11 @@ impl<D: Db> Cosigning<D> {
 
     // Check the cosign's signature
     {
-      let key = Public::from(match cosign.cosigner {
-        Cosigner::ValidatorSet(network) => {
-          let Some(key) = global_session.keys.get(&network) else {
-            return Ok(false);
-          };
-          *key
-        }
-        Cosigner::Validator(signer) => signer,
+      let key = Public::from({
+        let Some(key) = global_session.keys.get(&network) else {
+          return Ok(false);
+        };
+        *key
       });
 
       if !signed_cosign.verify_signature(key) {
@@ -409,7 +370,10 @@ impl<D: Db> Cosigning<D> {
 
     if our_block_hash == cosign.block_hash {
       // If this is for a future global session, we don't acknowledge this cosign at this time
-      if global_session.start_block_number > LatestCosignedBlockNumber::get(&txn).unwrap_or(0) {
+      let latest_cosigned_block_number = LatestCosignedBlockNumber::get(&txn).unwrap_or(0);
+      // This global session starts the block *after* its declaration, so we want to check if the
+      // block declaring it was cosigned
+      if (global_session.start_block_number - 1) > latest_cosigned_block_number {
         drop(txn);
         return Ok(true);
       }
@@ -418,17 +382,13 @@ impl<D: Db> Cosigning<D> {
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
       // Only handle this as a fault if this set wasn't prior faulty
-      if !faults.iter().any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(network)) {
+      if !faults.iter().any(|cosign| cosign.cosign.cosigner == network) {
         faults.push(signed_cosign.clone());
         Faults::set(&mut txn, cosign.global_session, &faults);
 
         let mut weight_cosigned = 0;
         for fault in &faults {
-          let Cosigner::ValidatorSet(network) = fault.cosign.cosigner else {
-            // TODO when we implement the non-ValidatorSet cosigner protocol
-            Err("non-ValidatorSet cosigner had a fault".to_string())?
-          };
-          let Some(stake) = global_session.stakes.get(&network) else {
+          let Some(stake) = global_session.stakes.get(&fault.cosign.cosigner) else {
             Err("cosigner with recognized key didn't have a stake entry saved".to_string())?
           };
           weight_cosigned += stake;
