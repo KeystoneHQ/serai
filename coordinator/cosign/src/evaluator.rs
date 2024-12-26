@@ -5,7 +5,7 @@ use serai_task::ContinuallyRan;
 
 use crate::{
   HasEvents, GlobalSession, NetworksLatestCosignedBlock, RequestNotableCosigns,
-  intend::{GlobalSessions, BlockEventData, BlockEvents},
+  intend::{GlobalSessionsChannel, BlockEventData, BlockEvents},
 };
 
 create_db!(
@@ -34,8 +34,8 @@ fn currently_evaluated_global_session_strict(
     let existing = match CurrentlyEvaluatedGlobalSession::get(txn) {
       Some(existing) => existing,
       None => {
-        let first =
-          GlobalSessions::try_recv(txn).expect("fetching latest global session yet none declared");
+        let first = GlobalSessionsChannel::try_recv(txn)
+          .expect("fetching latest global session yet none declared");
         CurrentlyEvaluatedGlobalSession::set(txn, &first);
         first
       }
@@ -47,37 +47,20 @@ fn currently_evaluated_global_session_strict(
     existing
   };
 
-  if let Some(next) = GlobalSessions::peek(txn) {
+  if let Some(next) = GlobalSessionsChannel::peek(txn) {
     assert!(
       block_number <= next.1.start_block_number,
       "currently_evaluated_global_session_strict wasn't called incrementally"
     );
     // If it's time for this session to activate, take it from the channel and set it
     if block_number == next.1.start_block_number {
-      GlobalSessions::try_recv(txn).unwrap();
+      GlobalSessionsChannel::try_recv(txn).unwrap();
       CurrentlyEvaluatedGlobalSession::set(txn, &next);
       res = next;
     }
   }
 
   res
-}
-
-// This is a non-strict function which won't panic, and also won't increment the session as needed.
-pub(crate) fn currently_evaluated_global_session(
-  getter: &impl Get,
-) -> Option<([u8; 32], GlobalSession)> {
-  // If there's a next session...
-  if let Some(next_global_session) = GlobalSessions::peek(getter) {
-    // and we've already evaluated the cosigns for the block declaring it...
-    if LatestCosignedBlockNumber::get(getter) == Some(next_global_session.1.start_block_number - 1)
-    {
-      // return it as the current session.
-      return Some(next_global_session);
-    }
-  }
-  // Else, return the current session
-  CurrentlyEvaluatedGlobalSession::get(getter)
 }
 
 /// A task to determine if a block has been cosigned and we should handle it.
