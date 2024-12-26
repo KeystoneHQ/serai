@@ -1,6 +1,6 @@
 use core::future::Future;
 
-use serai_client::{primitives::Amount, Serai};
+use serai_client::Serai;
 
 use serai_db::*;
 use serai_task::ContinuallyRan;
@@ -15,12 +15,12 @@ create_db!(
     // The latest cosigned block number.
     LatestCosignedBlockNumber: () -> u64,
     // The latest global session evaluated.
-    // TODO: Also include the weights here
     LatestGlobalSessionEvaluated: () -> ([u8; 32], Vec<ValidatorSet>),
   }
 );
 
 /// A task to determine if a block has been cosigned and we should handle it.
+// TODO: Remove `serai` from this
 pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
   pub(crate) db: D,
   pub(crate) serai: Serai,
@@ -38,7 +38,7 @@ async fn get_latest_global_session_evaluated(
       // This is the initial global session
       // Fetch the sets participating and declare it the latest value recognized
       let sets = cosigning_sets_by_parent_hash(serai, parent_hash).await?;
-      let initial_global_session = GlobalSession::new(sets.clone()).id();
+      let initial_global_session = GlobalSession::id(sets.clone());
       LatestGlobalSessionEvaluated::set(txn, &(initial_global_session, sets.clone()));
       (initial_global_session, sets)
     }
@@ -73,39 +73,26 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
 
             let mut weight_cosigned = 0;
-            let mut total_weight = 0;
-            let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session)
-              .ok_or_else(|| {
+            let global_session_info =
+              GlobalSessions::get(&txn, global_session).ok_or_else(|| {
                 "checking if intended cosign was satisfied within an unrecognized global session"
                   .to_string()
               })?;
             for set in sets {
-              // Fetch the weight for this set, as of the start of the global session
-              // This simplifies the logic around which set of stakes to use when evaluating
-              // cosigns, even if it's lossy as it isn't accurate to how stake may fluctuate within
-              // a session
-              let stake = self
-                .serai
-                .as_of(global_session_start_block)
-                .validator_sets()
-                .total_allocated_stake(set.network)
-                .await
-                .map_err(|e| format!("{e:?}"))?
-                .unwrap_or(Amount(0))
-                .0;
-              total_weight += stake;
-
               // Check if we have the cosign from this set
               if NetworksLatestCosignedBlock::get(&txn, global_session, set.network)
                 .map(|signed_cosign| signed_cosign.cosign.block_number) ==
                 Some(block_number)
               {
                 // Since have this cosign, add the set's weight to the weight which has cosigned
-                weight_cosigned += stake;
+                weight_cosigned +=
+                  global_session_info.stakes.get(&set.network).ok_or_else(|| {
+                    "ValidatorSet in global session yet didn't have its stake".to_string()
+                  })?;
               }
             }
             // Check if the sum weight doesn't cross the required threshold
-            if weight_cosigned < (((total_weight * 83) / 100) + 1) {
+            if weight_cosigned < (((global_session_info.total_stake * 83) / 100) + 1) {
               // Request the necessary cosigns over the network
               // TODO: Add a timer to ensure this isn't called too often
               self
@@ -122,7 +109,8 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
             // Since this block changes the global session, update it
             {
               let sets = cosigning_sets(&self.serai.as_of(block_hash)).await?;
-              let global_session = GlobalSession::new(sets.clone()).id();
+              let sets = sets.into_iter().map(|(set, _key)| set).collect::<Vec<_>>();
+              let global_session = GlobalSession::id(sets.clone());
               LatestGlobalSessionEvaluated::set(&mut txn, &(global_session, sets));
             }
           }
@@ -149,28 +137,15 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               // Get the global session for this block
               let (global_session, sets) =
                 get_latest_global_session_evaluated(&mut txn, &self.serai, parent_hash).await?;
-              let (_, global_session_start_block) = GlobalSessions::get(&txn, global_session)
-                .ok_or_else(|| {
+              let global_session_info =
+                GlobalSessions::get(&txn, global_session).ok_or_else(|| {
                   "checking if intended cosign was satisfied within an unrecognized global session"
                     .to_string()
                 })?;
 
               let mut weight_cosigned = 0;
-              let mut total_weight = 0;
               let mut lowest_common_block: Option<u64> = None;
               for set in sets {
-                let stake = self
-                  .serai
-                  .as_of(global_session_start_block)
-                  .validator_sets()
-                  .total_allocated_stake(set.network)
-                  .await
-                  .map_err(|e| format!("{e:?}"))?
-                  .unwrap_or(Amount(0))
-                  .0;
-                // Increment total_weight with this set's stake
-                total_weight += stake;
-
                 // Check if this set cosigned this block or not
                 let Some(cosign) =
                   NetworksLatestCosignedBlock::get(&txn, global_session, set.network)
@@ -178,7 +153,10 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
                   continue;
                 };
                 if cosign.cosign.block_number >= block_number {
-                  weight_cosigned += total_weight
+                  weight_cosigned +=
+                    global_session_info.stakes.get(&set.network).ok_or_else(|| {
+                      "ValidatorSet in global session yet didn't have its stake".to_string()
+                    })?;
                 }
 
                 // Update the lowest block common to all of these cosigns
@@ -188,7 +166,7 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
               }
 
               // Check if the sum weight doesn't cross the required threshold
-              if weight_cosigned < (((total_weight * 83) / 100) + 1) {
+              if weight_cosigned < (((global_session_info.total_stake * 83) / 100) + 1) {
                 // Request the superseding notable cosigns over the network
                 // If this session hasn't yet produced notable cosigns, then we presume we'll see
                 // the desired non-notable cosigns as part of normal operations, without needing to

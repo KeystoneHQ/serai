@@ -3,15 +3,16 @@
 #![deny(missing_docs)]
 
 use core::{fmt::Debug, future::Future};
+use std::collections::HashMap;
 
 use blake2::{Digest, Blake2s256};
 
 use borsh::{BorshSerialize, BorshDeserialize};
 
 use serai_client::{
-  primitives::{Amount, NetworkId, SeraiAddress},
+  primitives::{NetworkId, SeraiAddress},
   validator_sets::primitives::{Session, ValidatorSet, KeyPair},
-  Block, Serai, TemporalSerai,
+  Public, Block, Serai, TemporalSerai,
 };
 
 use serai_db::*;
@@ -45,29 +46,36 @@ pub const COSIGN_CONTEXT: &[u8] = b"serai-cosign";
   cosigning protocol.
 */
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
-struct GlobalSession {
-  cosigners: Vec<ValidatorSet>,
+pub(crate) struct GlobalSession {
+  pub(crate) start_block_number: u64,
+  pub(crate) keys: HashMap<NetworkId, SeraiAddress>,
+  pub(crate) stakes: HashMap<NetworkId, u64>,
+  pub(crate) total_stake: u64,
 }
 impl GlobalSession {
-  fn new(mut cosigners: Vec<ValidatorSet>) -> Self {
+  fn id(mut cosigners: Vec<ValidatorSet>) -> [u8; 32] {
     cosigners.sort_by_key(|a| borsh::to_vec(a).unwrap());
-    Self { cosigners }
-  }
-  fn id(&self) -> [u8; 32] {
-    Blake2s256::digest(borsh::to_vec(self).unwrap()).into()
+    Blake2s256::digest(borsh::to_vec(&cosigners).unwrap()).into()
   }
 }
 
 create_db! {
   Cosign {
-    // A mapping from a global session's ID to its start block (number, hash).
-    GlobalSessions: (global_session: [u8; 32]) -> (u64, [u8; 32]),
+    // The following are populated by the intend task and used throughout the library
+
+    // An index of Substrate blocks
+    SubstrateBlocks: (block_number: u64) -> [u8; 32],
+    // A mapping from a global session's ID to its relevant information.
+    GlobalSessions: (global_session: [u8; 32]) -> GlobalSession,
     // The last block to be cosigned by a global session.
-    GlobalSessionLastBlock: (global_session: [u8; 32]) -> u64,
+    GlobalSessionsLastBlock: (global_session: [u8; 32]) -> u64,
     // The latest global session intended.
     //
     // This is distinct from the latest global session for which we've evaluated the cosigns for.
     LatestGlobalSessionIntended: () -> [u8; 32],
+
+    // The following are managed by the `intake_cosign` function present in this file
+
     // The latest cosigned block for each network.
     //
     // This will only be populated with cosigns predating or during the most recent global session
@@ -189,21 +197,22 @@ async fn keys_for_network(
   Ok(None)
 }
 
-/// Fetch the `ValidatorSet`s used for cosigning as of this block.
-async fn cosigning_sets(serai: &TemporalSerai<'_>) -> Result<Vec<ValidatorSet>, String> {
+/// Fetch the `ValidatorSet`s, and their associated keys, used for cosigning as of this block.
+async fn cosigning_sets(serai: &TemporalSerai<'_>) -> Result<Vec<(ValidatorSet, Public)>, String> {
   let mut sets = Vec::with_capacity(serai_client::primitives::NETWORKS.len());
   for network in serai_client::primitives::NETWORKS {
-    let Some((session, _)) = keys_for_network(serai, network).await? else {
+    let Some((session, keys)) = keys_for_network(serai, network).await? else {
       // If this network doesn't have usable keys, move on
       continue;
     };
 
-    sets.push(ValidatorSet { network, session });
+    sets.push((ValidatorSet { network, session }, keys.0));
   }
   Ok(sets)
 }
 
-/// Fetch the `ValidatorSet`s used for cosigning a block by the block's parent hash.
+/// Fetch the `ValidatorSet`s, and their associated keys, used for cosigning a block by the block's
+/// parent hash.
 async fn cosigning_sets_by_parent_hash(
   serai: &Serai,
   parent_hash: [u8; 32],
@@ -213,10 +222,11 @@ async fn cosigning_sets_by_parent_hash(
     update the sets declared but that update shouldn't take effect until block `n` is cosigned).
     That's why fetching the cosigning sets for a block by its parent hash is valid.
   */
-  cosigning_sets(&serai.as_of(parent_hash)).await
+  let sets = cosigning_sets(&serai.as_of(parent_hash)).await?;
+  Ok(sets.into_iter().map(|(set, _key)| set).collect::<Vec<_>>())
 }
 
-/// Fetch the `ValidatorSet`s used for cosigning this block.
+/// Fetch the `ValidatorSet`s, and their associated keys, used for cosigning this block.
 async fn cosigning_sets_for_block(
   serai: &Serai,
   block: &Block,
@@ -242,7 +252,6 @@ pub struct Faulted;
 /// The interface to manage cosigning with.
 pub struct Cosigning<D: Db> {
   db: D,
-  serai: Serai,
 }
 impl<D: Db> Cosigning<D> {
   /// Spawn the tasks to intend and evaluate cosigns.
@@ -262,10 +271,10 @@ impl<D: Db> Cosigning<D> {
         .continually_run(intend_task, vec![evaluator_task_handle]),
     );
     tokio::spawn(
-      (evaluator::CosignEvaluatorTask { db: db.clone(), serai: serai.clone(), request })
+      (evaluator::CosignEvaluatorTask { db: db.clone(), serai, request })
         .continually_run(evaluator_task, tasks_to_run_upon_cosigning),
     );
-    Self { db, serai }
+    Self { db }
   }
 
   /// The latest cosigned block number.
@@ -338,7 +347,7 @@ impl<D: Db> Cosigning<D> {
   //
   // Takes `&mut self` as this should only be called once at any given moment.
   // TODO: Don't overload bool here
-  pub async fn intake_cosign(&mut self, signed_cosign: SignedCosign) -> Result<bool, String> {
+  pub fn intake_cosign(&mut self, signed_cosign: &SignedCosign) -> Result<bool, String> {
     let cosign = &signed_cosign.cosign;
 
     let Cosigner::ValidatorSet(network) = cosign.cosigner else {
@@ -356,41 +365,37 @@ impl<D: Db> Cosigning<D> {
       }
     }
 
-    // Check our finalized (and indexed by intend) blockchain exceeds this block number
-    if cosign.block_number >= intend::ScanCosignFrom::get(&self.db).unwrap_or(0) {
+    // Check our indexed blockchain includes a block with this block number
+    let Some(our_block_hash) = SubstrateBlocks::get(&self.db, cosign.block_number) else {
       return Ok(true);
-    }
+    };
 
-    let Some((global_session_start_block_number, global_session_start_block_hash)) =
-      GlobalSessions::get(&self.db, cosign.global_session)
-    else {
+    let Some(global_session) = GlobalSessions::get(&self.db, cosign.global_session) else {
       // Unrecognized global session
       return Ok(true);
     };
-    if cosign.block_number <= global_session_start_block_number {
+    if cosign.block_number <= global_session.start_block_number {
       // Cosign is for a block predating the global session
       return Ok(false);
     }
-    if Some(cosign.block_number) > GlobalSessionLastBlock::get(&self.db, cosign.global_session) {
-      // Cosign is for a block after the last block this global session should have signed
-      return Ok(false);
+    if let Some(last_block) = GlobalSessionsLastBlock::get(&self.db, cosign.global_session) {
+      if cosign.block_number > last_block {
+        // Cosign is for a block after the last block this global session should have signed
+        return Ok(false);
+      }
     }
 
     // Check the cosign's signature
     {
-      let key = match cosign.cosigner {
+      let key = Public::from(match cosign.cosigner {
         Cosigner::ValidatorSet(network) => {
-          // TODO: Cache this
-          let Some((_session, keys)) =
-            keys_for_network(&self.serai.as_of(global_session_start_block_hash), network).await?
-          else {
+          let Some(key) = global_session.keys.get(&network) else {
             return Ok(false);
           };
-
-          keys.0
+          *key
         }
-        Cosigner::Validator(signer) => signer.into(),
-      };
+        Cosigner::Validator(signer) => signer,
+      });
 
       if !signed_cosign.verify_signature(key) {
         return Ok(false);
@@ -402,20 +407,14 @@ impl<D: Db> Cosigning<D> {
 
     let mut txn = self.db.txn();
 
-    let our_block_hash = self
-      .serai
-      .block_hash(cosign.block_number)
-      .await
-      .map_err(|e| format!("{e:?}"))?
-      .ok_or_else(|| "requested hash of a finalized block yet received None".to_string())?;
     if our_block_hash == cosign.block_hash {
       // If this is for a future global session, we don't acknowledge this cosign at this time
-      if global_session_start_block_number > LatestCosignedBlockNumber::get(&txn).unwrap_or(0) {
+      if global_session.start_block_number > LatestCosignedBlockNumber::get(&txn).unwrap_or(0) {
         drop(txn);
         return Ok(true);
       }
 
-      NetworksLatestCosignedBlock::set(&mut txn, cosign.global_session, network, &signed_cosign);
+      NetworksLatestCosignedBlock::set(&mut txn, cosign.global_session, network, signed_cosign);
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
       // Only handle this as a fault if this set wasn't prior faulty
@@ -424,31 +423,19 @@ impl<D: Db> Cosigning<D> {
         Faults::set(&mut txn, cosign.global_session, &faults);
 
         let mut weight_cosigned = 0;
-        let mut total_weight = 0;
-        for set in cosigning_sets(&self.serai.as_of(global_session_start_block_hash)).await? {
-          let stake = self
-            .serai
-            .as_of(global_session_start_block_hash)
-            .validator_sets()
-            .total_allocated_stake(set.network)
-            .await
-            .map_err(|e| format!("{e:?}"))?
-            .unwrap_or(Amount(0))
-            .0;
-          // Increment total_weight with this set's stake
-          total_weight += stake;
-
-          // Check if this set cosigned this block or not
-          if faults
-            .iter()
-            .any(|cosign| cosign.cosign.cosigner == Cosigner::ValidatorSet(set.network))
-          {
-            weight_cosigned += total_weight
-          }
+        for fault in &faults {
+          let Cosigner::ValidatorSet(network) = fault.cosign.cosigner else {
+            // TODO when we implement the non-ValidatorSet cosigner protocol
+            Err("non-ValidatorSet cosigner had a fault".to_string())?
+          };
+          let Some(stake) = global_session.stakes.get(&network) else {
+            Err("cosigner with recognized key didn't have a stake entry saved".to_string())?
+          };
+          weight_cosigned += stake;
         }
 
         // Check if the sum weight means a fault has occurred
-        if weight_cosigned >= ((total_weight * 17) / 100) {
+        if weight_cosigned >= ((global_session.total_stake * 17) / 100) {
           FaultedSession::set(&mut txn, &cosign.global_session);
         }
       }

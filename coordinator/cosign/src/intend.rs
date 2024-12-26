@@ -1,6 +1,11 @@
 use core::future::Future;
+use std::collections::HashMap;
 
-use serai_client::{Serai, validator_sets::primitives::ValidatorSet};
+use serai_client::{
+  primitives::{SeraiAddress, Amount},
+  validator_sets::primitives::ValidatorSet,
+  Serai,
+};
 
 use serai_db::*;
 use serai_task::ContinuallyRan;
@@ -71,29 +76,71 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
             .await
             .map_err(|e| format!("{e:?}"))?;
 
+        // Check we are indexing a linear chain
+        if (block_number > 1) &&
+          (<[u8; 32]>::from(block.header.parent_hash) !=
+            SubstrateBlocks::get(&txn, block_number - 1)
+              .expect("indexing a block but haven't indexed its parent"))
+        {
+          Err(format!(
+            "node's block #{block_number} doesn't build upon the block #{} prior indexed",
+            block_number - 1
+          ))?;
+        }
+
+        SubstrateBlocks::set(&mut txn, block_number, &block.hash());
+
         match has_events {
           HasEvents::Notable | HasEvents::NonNotable => {
+            // TODO: Replace with LatestGlobalSessionIntended, GlobalSessions
             let sets = cosigning_sets_for_block(&self.serai, &block).await?;
+
+            // If this block doesn't have any cosigners, meaning it'll never be cosigned, we flag
+            // it as not having any events requiring cosigning so we don't attempt to sign/require
+            // a cosign for it
+            if sets.is_empty() {
+              has_events = HasEvents::No;
+            }
 
             // If this is notable, it creates a new global session, which we index into the
             // database now
             if has_events == HasEvents::Notable {
-              let sets = cosigning_sets(&self.serai.as_of(block.hash())).await?;
-              let global_session = GlobalSession::new(sets).id();
-              GlobalSessions::set(&mut txn, global_session, &(block_number, block.hash()));
+              let serai = self.serai.as_of(block.hash());
+              let sets = cosigning_sets(&serai).await?;
+              let global_session = GlobalSession::id(sets.iter().map(|(set, _key)| *set).collect());
+
+              let mut keys = HashMap::new();
+              let mut stakes = HashMap::new();
+              let mut total_stake = 0;
+              for (set, key) in &sets {
+                keys.insert(set.network, SeraiAddress::from(*key));
+                let stake = serai
+                  .validator_sets()
+                  .total_allocated_stake(set.network)
+                  .await
+                  .map_err(|e| format!("{e:?}"))?
+                  .unwrap_or(Amount(0))
+                  .0;
+                stakes.insert(set.network, stake);
+                total_stake += stake;
+              }
+              if total_stake == 0 {
+                Err(format!("cosigning sets for block #{block_number} had 0 stake in total"))?;
+              }
+
+              GlobalSessions::set(
+                &mut txn,
+                global_session,
+                &(GlobalSession { start_block_number: block_number, keys, stakes, total_stake }),
+              );
               if let Some(ending_global_session) = LatestGlobalSessionIntended::get(&txn) {
-                GlobalSessionLastBlock::set(&mut txn, ending_global_session, &block_number);
+                GlobalSessionsLastBlock::set(&mut txn, ending_global_session, &block_number);
               }
               LatestGlobalSessionIntended::set(&mut txn, &global_session);
             }
 
-            // If this block doesn't have any cosigners, meaning it'll never be cosigned, we flag it
-            // as not having any events requiring cosigning so we don't attempt to sign/require a
-            // cosign for it
-            if sets.is_empty() {
-              has_events = HasEvents::No;
-            } else {
-              let global_session = GlobalSession::new(sets.clone()).id();
+            if has_events != HasEvents::No {
+              let global_session = GlobalSession::id(sets.clone());
               // Tell each set of their expectation to cosign this block
               for set in sets {
                 log::debug!("{:?} will be cosigning block #{block_number}", set);
