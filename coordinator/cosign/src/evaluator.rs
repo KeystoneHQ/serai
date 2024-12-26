@@ -5,35 +5,38 @@ use serai_task::ContinuallyRan;
 
 use crate::{
   HasEvents, GlobalSession, NetworksLatestCosignedBlock, RequestNotableCosigns,
-  intend::{GlobalSessionsChannel, BlockEventData, BlockEvents},
+  intend::{GlobalSessions, BlockEventData, BlockEvents},
 };
 
 create_db!(
   SubstrateCosignEvaluator {
     // The latest cosigned block number.
     LatestCosignedBlockNumber: () -> u64,
-    // The latest global session evaluated.
-    LatestGlobalSessionEvaluated: () -> ([u8; 32], GlobalSession),
+    // The global session currently being evaluated.
+    CurrentlyEvaluatedGlobalSession: () -> ([u8; 32], GlobalSession),
   }
 );
 
-/// A task to determine if a block has been cosigned and we should handle it.
-pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
-  pub(crate) db: D,
-  pub(crate) request: R,
-}
-
-fn get_latest_global_session_evaluated(
+// This is a strict function which won't panic, even with a malicious Serai node, so long as:
+// - It's called incrementally
+// - It's only called for block numbers we've completed indexing on within the intend task
+// - It's only called for block numbers after a global session has started
+// - The global sessions channel is populated as the block declaring the session is indexed
+// Which all hold true within the context of this task and the intend task.
+//
+// This function will also ensure the currently evaluated global session is incremented once we
+// finish evaluation of the prior session.
+fn currently_evaluated_global_session_strict(
   txn: &mut impl DbTxn,
   block_number: u64,
 ) -> ([u8; 32], GlobalSession) {
   let mut res = {
-    let existing = match LatestGlobalSessionEvaluated::get(txn) {
+    let existing = match CurrentlyEvaluatedGlobalSession::get(txn) {
       Some(existing) => existing,
       None => {
-        let first = GlobalSessionsChannel::try_recv(txn)
-          .expect("fetching latest global session yet none declared");
-        LatestGlobalSessionEvaluated::set(txn, &first);
+        let first =
+          GlobalSessions::try_recv(txn).expect("fetching latest global session yet none declared");
+        CurrentlyEvaluatedGlobalSession::set(txn, &first);
         first
       }
     };
@@ -44,20 +47,43 @@ fn get_latest_global_session_evaluated(
     existing
   };
 
-  if let Some(next) = GlobalSessionsChannel::peek(txn) {
+  if let Some(next) = GlobalSessions::peek(txn) {
     assert!(
       block_number <= next.1.start_block_number,
-      "get_latest_global_session_evaluated wasn't called incrementally"
+      "currently_evaluated_global_session_strict wasn't called incrementally"
     );
     // If it's time for this session to activate, take it from the channel and set it
     if block_number == next.1.start_block_number {
-      GlobalSessionsChannel::try_recv(txn).unwrap();
-      LatestGlobalSessionEvaluated::set(txn, &next);
+      GlobalSessions::try_recv(txn).unwrap();
+      CurrentlyEvaluatedGlobalSession::set(txn, &next);
       res = next;
     }
   }
 
   res
+}
+
+// This is a non-strict function which won't panic, and also won't increment the session as needed.
+pub(crate) fn currently_evaluated_global_session(
+  getter: &impl Get,
+) -> Option<([u8; 32], GlobalSession)> {
+  // If there's a next session...
+  if let Some(next_global_session) = GlobalSessions::peek(getter) {
+    // and we've already evaluated the cosigns for the block declaring it...
+    if LatestCosignedBlockNumber::get(getter) == Some(next_global_session.1.start_block_number - 1)
+    {
+      // return it as the current session.
+      return Some(next_global_session);
+    }
+  }
+  // Else, return the current session
+  CurrentlyEvaluatedGlobalSession::get(getter)
+}
+
+/// A task to determine if a block has been cosigned and we should handle it.
+pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
+  pub(crate) db: D,
+  pub(crate) request: R,
 }
 
 impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, R> {
@@ -84,7 +110,7 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
           // supermajority of the prior block's validator sets
           HasEvents::Notable => {
             let (global_session, global_session_info) =
-              get_latest_global_session_evaluated(&mut txn, block_number);
+              currently_evaluated_global_session_strict(&mut txn, block_number);
 
             let mut weight_cosigned = 0;
             for set in global_session_info.sets {
@@ -137,7 +163,7 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
 
               // Get the global session for this block
               let (global_session, global_session_info) =
-                get_latest_global_session_evaluated(&mut txn, block_number);
+                currently_evaluated_global_session_strict(&mut txn, block_number);
 
               let mut weight_cosigned = 0;
               let mut lowest_common_block: Option<u64> = None;

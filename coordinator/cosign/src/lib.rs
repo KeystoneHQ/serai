@@ -45,7 +45,7 @@ pub const COSIGN_CONTEXT: &[u8] = b"serai-cosign";
   have validator sets follow two distinct global sessions without breaking the bounds of the
   cosigning protocol.
 */
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub(crate) struct GlobalSession {
   pub(crate) start_block_number: u64,
   pub(crate) sets: Vec<ValidatorSet>,
@@ -66,14 +66,12 @@ create_db! {
 
     // An index of Substrate blocks
     SubstrateBlocks: (block_number: u64) -> [u8; 32],
-    // A mapping from a global session's ID to its relevant information.
-    GlobalSessions: (global_session: [u8; 32]) -> GlobalSession,
     // The last block to be cosigned by a global session.
     GlobalSessionsLastBlock: (global_session: [u8; 32]) -> u64,
     // The latest global session intended.
     //
     // This is distinct from the latest global session for which we've evaluated the cosigns for.
-    LatestGlobalSessionIntended: () -> [u8; 32],
+    LatestGlobalSessionIntended: () -> ([u8; 32], GlobalSession),
 
     // The following are managed by the `intake_cosign` function present in this file
 
@@ -287,7 +285,9 @@ impl<D: Db> Cosigning<D> {
       }
       cosigns
     } else {
-      let Some(latest_global_session) = LatestGlobalSessionIntended::get(&self.db) else {
+      let Some((latest_global_session, _latest_global_session_info)) =
+        LatestGlobalSessionIntended::get(&self.db)
+      else {
         return vec![];
       };
       let mut cosigns = Vec::with_capacity(serai_client::primitives::NETWORKS.len());
@@ -320,7 +320,7 @@ impl<D: Db> Cosigning<D> {
     let cosign = &signed_cosign.cosign;
     let network = cosign.cosigner;
 
-    // Check this isn't a dated cosign
+    // Check this isn't a dated cosign within its global session (as it would be if rebroadcasted)
     if let Some(existing) =
       NetworksLatestCosignedBlock::get(&self.db, cosign.global_session, network)
     {
@@ -334,11 +334,19 @@ impl<D: Db> Cosigning<D> {
       return Ok(true);
     };
 
-    let Some(global_session) = GlobalSessions::get(&self.db, cosign.global_session) else {
-      // Unrecognized global session
+    // Check the cosign aligns with the global session we're currently working on
+    let Some((global_session, global_session_info)) =
+      evaluator::currently_evaluated_global_session(&self.db)
+    else {
+      // We haven't recognized any global sessions yet
       return Ok(true);
     };
-    if cosign.block_number < global_session.start_block_number {
+    if cosign.global_session != global_session {
+      return Ok(true);
+    }
+
+    // Check the cosigned block number is in range to the global session
+    if cosign.block_number < global_session_info.start_block_number {
       // Cosign is for a block predating the global session
       return Ok(false);
     }
@@ -352,7 +360,7 @@ impl<D: Db> Cosigning<D> {
     // Check the cosign's signature
     {
       let key = Public::from({
-        let Some(key) = global_session.keys.get(&network) else {
+        let Some(key) = global_session_info.keys.get(&network) else {
           return Ok(false);
         };
         *key
@@ -369,15 +377,6 @@ impl<D: Db> Cosigning<D> {
     let mut txn = self.db.txn();
 
     if our_block_hash == cosign.block_hash {
-      // If this is for a future global session, we don't acknowledge this cosign at this time
-      let latest_cosigned_block_number = LatestCosignedBlockNumber::get(&txn).unwrap_or(0);
-      // This global session starts the block *after* its declaration, so we want to check if the
-      // block declaring it was cosigned
-      if (global_session.start_block_number - 1) > latest_cosigned_block_number {
-        drop(txn);
-        return Ok(true);
-      }
-
       NetworksLatestCosignedBlock::set(&mut txn, cosign.global_session, network, signed_cosign);
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
@@ -388,14 +387,14 @@ impl<D: Db> Cosigning<D> {
 
         let mut weight_cosigned = 0;
         for fault in &faults {
-          let Some(stake) = global_session.stakes.get(&fault.cosign.cosigner) else {
+          let Some(stake) = global_session_info.stakes.get(&fault.cosign.cosigner) else {
             Err("cosigner with recognized key didn't have a stake entry saved".to_string())?
           };
           weight_cosigned += stake;
         }
 
         // Check if the sum weight means a fault has occurred
-        if weight_cosigned >= ((global_session.total_stake * 17) / 100) {
+        if weight_cosigned >= ((global_session_info.total_stake * 17) / 100) {
           FaultedSession::set(&mut txn, &cosign.global_session);
         }
       }

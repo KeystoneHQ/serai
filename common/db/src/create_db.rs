@@ -144,17 +144,17 @@ macro_rules! db_channel {
           Self::set(txn, $($arg,)* index_to_use, value);
         }
         pub(crate) fn peek(
-          txn: &mut impl DbTxn
+          getter: &impl Get
           $(, $arg: $arg_type)*
         ) -> Option<$field_type> {
           let messages_recvd_key = Self::key($($arg,)* 1);
-          let messages_recvd = txn.get(&messages_recvd_key).map(|counter| {
+          let messages_recvd = getter.get(&messages_recvd_key).map(|counter| {
             u32::from_le_bytes(counter.try_into().unwrap())
           }).unwrap_or(0);
 
           let index_to_read = messages_recvd + 2;
 
-          Self::get(txn, $($arg,)* index_to_read)
+          Self::get(getter, $($arg,)* index_to_read)
         }
         pub(crate) fn try_recv(
           txn: &mut impl DbTxn

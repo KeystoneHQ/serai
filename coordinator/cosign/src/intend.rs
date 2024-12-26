@@ -26,7 +26,7 @@ pub(crate) struct BlockEventData {
 
 db_channel! {
   CosignIntendChannels {
-    GlobalSessionsChannel: () -> ([u8; 32], GlobalSession),
+    GlobalSessions: () -> ([u8; 32], GlobalSession),
     BlockEvents: () -> BlockEventData,
     IntendedCosigns: (set: ValidatorSet) -> CosignIntent,
   }
@@ -128,12 +128,14 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
             stakes,
             total_stake,
           };
-          GlobalSessions::set(&mut txn, global_session, &global_session_info);
-          if let Some(ending_global_session) = global_session_for_this_block {
+          if let Some((ending_global_session, _ending_global_session_info)) = global_session_for_this_block {
             GlobalSessionsLastBlock::set(&mut txn, ending_global_session, &block_number);
           }
-          LatestGlobalSessionIntended::set(&mut txn, &global_session);
-          GlobalSessionsChannel::send(&mut txn, &(global_session, global_session_info));
+          LatestGlobalSessionIntended::set(
+            &mut txn,
+            &(global_session, global_session_info.clone()),
+          );
+          GlobalSessions::send(&mut txn, &(global_session, global_session_info));
         }
 
         // If there isn't anyone available to cosign this block, meaning it'll never be cosigned,
@@ -145,10 +147,9 @@ impl<D: Db> ContinuallyRan for CosignIntendTask<D> {
 
         match has_events {
           HasEvents::Notable | HasEvents::NonNotable => {
-            let global_session_for_this_block = global_session_for_this_block
-              .expect("global session for this block was None but still attempting to cosign it");
-            let global_session_info = GlobalSessions::get(&txn, global_session_for_this_block)
-              .expect("last global session intended wasn't saved to the database");
+            let (global_session_for_this_block, global_session_info) =
+              global_session_for_this_block
+                .expect("global session for this block was None but still attempting to cosign it");
 
             // Tell each set of their expectation to cosign this block
             for set in global_session_info.sets {
