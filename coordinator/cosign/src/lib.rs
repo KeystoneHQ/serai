@@ -324,14 +324,16 @@ impl<D: Db> Cosigning<D> {
     let Some(our_block_hash) = SubstrateBlocks::get(&self.db, cosign.block_number) else {
       return Ok(true);
     };
-    let faulty = our_block_hash == cosign.block_hash;
+    let faulty = cosign.block_hash != our_block_hash;
 
     // Check this isn't a dated cosign within its global session (as it would be if rebroadcasted)
-    if let Some(existing) =
-      NetworksLatestCosignedBlock::get(&self.db, cosign.global_session, network)
-    {
-      if existing.cosign.block_number >= cosign.block_number {
-        return Ok(true);
+    if !faulty {
+      if let Some(existing) =
+        NetworksLatestCosignedBlock::get(&self.db, cosign.global_session, network)
+      {
+        if existing.cosign.block_number >= cosign.block_number {
+          return Ok(true);
+        }
       }
     }
 
@@ -371,7 +373,7 @@ impl<D: Db> Cosigning<D> {
 
     let mut txn = self.db.txn();
 
-    if our_block_hash == cosign.block_hash {
+    if !faulty {
       // If this is for a future global session, we don't acknowledge this cosign at this time
       let latest_cosigned_block_number = LatestCosignedBlockNumber::get(&txn).unwrap_or(0);
       // This global session starts the block *after* its declaration, so we want to check if the
@@ -381,6 +383,7 @@ impl<D: Db> Cosigning<D> {
         return Ok(true);
       }
 
+      // This is safe as it's in-range and newer, as prior checked since it isn't faulty
       NetworksLatestCosignedBlock::set(&mut txn, cosign.global_session, network, signed_cosign);
     } else {
       let mut faults = Faults::get(&txn, cosign.global_session).unwrap_or(vec![]);
