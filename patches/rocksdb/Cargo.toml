@@ -13,10 +13,10 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-rocksdb = { version = "0.22", default-features = false }
+rocksdb = { version = "0.23", default-features = false, features = ["bindgen-runtime"] }
 
 [features]
-jemalloc = []
+jemalloc = [] # Dropped as this causes a compilation failure on windows
 snappy = ["rocksdb/snappy"]
 lz4 = ["rocksdb/lz4"]
 zstd = ["rocksdb/zstd"]
