@@ -1,4 +1,5 @@
 use core::future::Future;
+use std::time::{Duration, SystemTime};
 
 use serai_db::*;
 use serai_task::ContinuallyRan;
@@ -10,10 +11,15 @@ use crate::{
 
 create_db!(
   SubstrateCosignEvaluator {
-    // The latest cosigned block number.
-    LatestCosignedBlockNumber: () -> u64,
     // The global session currently being evaluated.
     CurrentlyEvaluatedGlobalSession: () -> ([u8; 32], GlobalSession),
+  }
+);
+
+db_channel!(
+  SubstrateCosignEvaluatorChannels {
+    // (cosigned block, time cosign was evaluated)
+    CosignedBlocks: () -> (u64, u64),
   }
 );
 
@@ -72,8 +78,6 @@ pub(crate) struct CosignEvaluatorTask<D: Db, R: RequestNotableCosigns> {
 impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, R> {
   fn run_iteration(&mut self) -> impl Send + Future<Output = Result<bool, String>> {
     async move {
-      let latest_cosigned_block_number = LatestCosignedBlockNumber::get(&self.db).unwrap_or(0);
-
       let mut known_cosign = None;
       let mut made_progress = false;
       loop {
@@ -82,11 +86,6 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
         else {
           break;
         };
-        // Make sure these two feeds haven't desynchronized somehow
-        // We could remove our `LatestCosignedBlockNumber`, making the latest cosigned block number
-        // the next message in the channel's block number minus one, but that'd only work when the
-        // channel isn't empty
-        assert_eq!(block_number, latest_cosigned_block_number + 1);
 
         match has_events {
           // Because this had notable events, we require an explicit cosign for this block by a
@@ -201,8 +200,17 @@ impl<D: Db, R: RequestNotableCosigns> ContinuallyRan for CosignEvaluatorTask<D, 
           HasEvents::No => {}
         }
 
-        // Since we checked we had the necessary cosigns, increment the latest cosigned block
-        LatestCosignedBlockNumber::set(&mut txn, &block_number);
+        // Since we checked we had the necessary cosigns, send it for delay before acknowledgement
+        CosignedBlocks::send(
+          &mut txn,
+          &(
+            block_number,
+            SystemTime::now()
+              .duration_since(SystemTime::UNIX_EPOCH)
+              .unwrap_or(Duration::ZERO)
+              .as_secs(),
+          ),
+        );
         txn.commit();
 
         made_progress = true;

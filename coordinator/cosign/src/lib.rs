@@ -22,7 +22,10 @@ use serai_task::*;
 mod intend;
 /// The evaluator of the cosigns.
 mod evaluator;
-use evaluator::LatestCosignedBlockNumber;
+/// The task to delay acknowledgement of the cosigns.
+mod delay;
+pub use delay::BROADCAST_FREQUENCY;
+use delay::LatestCosignedBlockNumber;
 
 /// The schnorrkel context to used when signing a cosign.
 pub const COSIGN_CONTEXT: &[u8] = b"serai-cosign";
@@ -235,13 +238,18 @@ impl<D: Db> Cosigning<D> {
   ) -> Self {
     let (intend_task, _intend_task_handle) = Task::new();
     let (evaluator_task, evaluator_task_handle) = Task::new();
+    let (delay_task, delay_task_handle) = Task::new();
     tokio::spawn(
       (intend::CosignIntendTask { db: db.clone(), serai })
         .continually_run(intend_task, vec![evaluator_task_handle]),
     );
     tokio::spawn(
       (evaluator::CosignEvaluatorTask { db: db.clone(), request })
-        .continually_run(evaluator_task, tasks_to_run_upon_cosigning),
+        .continually_run(evaluator_task, vec![delay_task_handle]),
+    );
+    tokio::spawn(
+      (delay::CosignDelayTask { db: db.clone() })
+        .continually_run(delay_task, tasks_to_run_upon_cosigning),
     );
     Self { db }
   }
@@ -269,7 +277,7 @@ impl<D: Db> Cosigning<D> {
     cosigns
   }
 
-  /// The cosigns to rebroadcast ever so often.
+  /// The cosigns to rebroadcast every `BROADCAST_FREQUENCY` seconds.
   ///
   /// This will be the most recent cosigns, in case the initial broadcast failed, or the faulty
   /// cosigns, in case of a fault, to induce identification of the fault by others.
@@ -348,6 +356,8 @@ impl<D: Db> Cosigning<D> {
       return Ok(false);
     }
     if !faulty {
+      // This prevents a malicious validator set, on the same chain, from producing a cosign after
+      // their final block, replacing their notable cosign
       if let Some(last_block) = GlobalSessionsLastBlock::get(&self.db, cosign.global_session) {
         if cosign.block_number > last_block {
           // Cosign is for a block after the last block this global session should have signed

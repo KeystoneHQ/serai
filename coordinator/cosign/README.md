@@ -66,7 +66,7 @@ to exhibit the same behavior), yet prevents interaction with it.
 
 If cosigns representing 17% of the non-Serai validators sets by weight are
 detected for distinct blocks at the same position, the protocol halts. An
-explicit latency period of five seconds is enacted after receiving a cosign
+explicit latency period of seventy seconds is enacted after receiving a cosign
 commit for the detection of such an equivocation. This is largely redundant
 given how the Serai blockchain node will presumably have halted itself by this
 time.
@@ -114,8 +114,8 @@ asynchronous network or 11.33% of non-Serai validator sets' stake.
 ### TODO
 
 The Serai node no longer responding to RPC requests upon detecting any
-equivocation, the delayed acknowledgement of cosigns, and the fallback protocol
-where validators individually produce signatures, are not implemented at this
-time. The former means the detection of equivocating cosigns not redundant and
-the latter makes 5.67% of non-Serai validator sets' stake the DoS threshold,
-even without control of an asynchronous network.
+equivocation, and the fallback protocol where validators individually produce
+signatures, are not implemented at this time. The former means the detection of
+equivocating cosigns is not redundant and the latter makes 5.67% of non-Serai
+validator sets' stake the DoS threshold, even without control of an
+asynchronous network.
