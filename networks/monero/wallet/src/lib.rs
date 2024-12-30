@@ -44,12 +44,15 @@ pub mod send;
 #[cfg(test)]
 mod tests;
 
+/// The eventual output of a SignableTransaction.
 #[derive(Clone, PartialEq, Eq, Zeroize)]
-struct SharedKeyDerivations {
+pub struct SharedKeyDerivations {
   // Hs("view_tag" || 8Ra || o)
-  view_tag: u8,
+  /// The view tag for the transaction output.
+  pub view_tag: u8,
   // Hs(uniqueness || 8Ra || o) where uniqueness may be empty
-  shared_key: Scalar,
+  /// The shared key for the transaction output.
+  pub shared_key: Scalar,
 }
 
 impl SharedKeyDerivations {
@@ -69,8 +72,9 @@ impl SharedKeyDerivations {
     keccak256(u)
   }
 
+  /// Derive the shared key and view tag for a transaction output.
   #[allow(clippy::needless_pass_by_value)]
-  fn output_derivations(
+  pub fn output_derivations(
     uniqueness: Option<[u8; 32]>,
     ecdh: Zeroizing<EdwardsPoint>,
     o: usize,
@@ -102,8 +106,9 @@ impl SharedKeyDerivations {
   }
 
   // H(8Ra || 0x8d)
+  /// Derive the payment ID XOR for a transaction output.
   #[allow(clippy::needless_pass_by_value)]
-  fn payment_id_xor(ecdh: Zeroizing<EdwardsPoint>) -> [u8; 8] {
+  pub fn payment_id_xor(ecdh: Zeroizing<EdwardsPoint>) -> [u8; 8] {
     // 8Ra
     let output_derivation = Zeroizing::new(
       Zeroizing::new(Zeroizing::new(ecdh.mul_by_cofactor()).compress().to_bytes()).to_vec(),
@@ -115,7 +120,8 @@ impl SharedKeyDerivations {
     payment_id_xor
   }
 
-  fn commitment_mask(&self) -> Scalar {
+  /// Derive the shared key and view tag for a transaction input.
+  pub fn commitment_mask(&self) -> Scalar {
     let mut mask = b"commitment_mask".to_vec();
     mask.extend(self.shared_key.as_bytes());
     let res = keccak256_to_scalar(&mask);
@@ -123,7 +129,8 @@ impl SharedKeyDerivations {
     res
   }
 
-  fn compact_amount_encryption(&self, amount: u64) -> [u8; 8] {
+  /// Encrypts an amount using the shared key.
+  pub fn compact_amount_encryption(&self, amount: u64) -> [u8; 8] {
     let mut amount_mask = Zeroizing::new(b"amount".to_vec());
     amount_mask.extend(self.shared_key.to_bytes());
     let mut amount_mask = keccak256(&amount_mask);
